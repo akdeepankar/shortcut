@@ -8,9 +8,16 @@ import os from 'os';
 import crypto from 'crypto';
 
 const execAsync = promisify(exec);
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function POST(request: NextRequest) {
+    let openai: OpenAI;
+    try {
+        // Try to access the service binding / env variable safely
+        openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    } catch (e) {
+        // Service not available during build
+        return new NextResponse('Service not available', { status: 503 });
+    }
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
         async start(controller) {
