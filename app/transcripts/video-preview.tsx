@@ -43,7 +43,7 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
 
     const videoRef = useRef<HTMLVideoElement>(null);
     const voiceoverRef = useRef<HTMLAudioElement | null>(null);
-    const [activeHandle, setActiveHandle] = useState<'start' | 'end' | 'playhead' | 'voice-drag' | null>(null);
+    const [activeHandle, setActiveHandle] = useState<string | null>(null);
     const [grabOffset, setGrabOffset] = useState(0); // Offset in seconds from block start
     const [showVoiceEditor, setShowVoiceEditor] = useState(true);
     const [isMagicModalOpen, setIsMagicModalOpen] = useState(false);

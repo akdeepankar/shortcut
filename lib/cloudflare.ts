@@ -517,3 +517,26 @@ export async function runAIRetrieval(instanceName: string, query: string, env: a
     const aiSearchContext = env.AI.autorag(instanceName);
     return await aiSearchContext.search({ query, max_num_results: maxResults });
 }
+
+/**
+ * Classify image (@cf/microsoft/resnet-50)
+ */
+export async function classifyImage(base64Content: string) {
+    const buffer = Buffer.from(base64Content, 'base64');
+    const result = await cfFetch('/ai/run/@cf/microsoft/resnet-50', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: new Uint8Array(buffer),
+    });
+
+    return result.result as Array<{ label: string; score: number }>;
+}
+
+/**
+ * Put object in R2 (Fallback/binding placeholder)
+ */
+export async function putR2(key: string, data: any) {
+    // Log to console for now, as direct REST API for R2 without AWS SDK/binding is limited
+    console.log(`[R2] Simulating put to R2 for key: ${key}`);
+    return { success: true };
+}
