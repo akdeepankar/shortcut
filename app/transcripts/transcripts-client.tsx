@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import TranscriptView from './transcript-view';
 import VideoPreview from './video-preview';
+import ProcessForm from './process-form';
 import ProcessingModal from '../components/processing-modal';
 import { generateSocialMetadata } from '../actions-meta';
 import ReactMarkdown from 'react-markdown';
@@ -27,6 +28,7 @@ interface TranscriptsClientProps {
     transcripts: SearchResult[];
     initialQuery?: string;
     initialAgentResponse?: string | null;
+    videoUrl?: string; // Add this
 }
 
 interface FinalizedClip {
@@ -35,6 +37,9 @@ interface FinalizedClip {
     endTime: string;
     sourceUrl: string;
     transcript?: string;
+    voiceoverBlocks?: any[];
+    captionStyles?: any;
+    showCaptions?: boolean;
 }
 
 interface SocialMetadata {
@@ -45,29 +50,56 @@ interface SocialMetadata {
     platform_advice: string;
 }
 
-export default function TranscriptsClient({ transcripts, initialQuery, initialAgentResponse }: TranscriptsClientProps) {
+export default function TranscriptsClient({ transcripts, initialQuery, initialAgentResponse, videoUrl }: TranscriptsClientProps) {
     const [selectedTimestamp, setSelectedTimestamp] = useState<{ start: string; end: string; videoUrl?: string } | null>(null);
     const [isMinimized, setIsMinimized] = useState(false);
     const [finalizedClip, setFinalizedClip] = useState<FinalizedClip | null>(null);
     const [socialMeta, setSocialMeta] = useState<SocialMetadata | null>(null);
     const [isGeneratingMeta, setIsGeneratingMeta] = useState(false);
     const [copiedId, setCopiedId] = useState<string | null>(null);
+    const [userId, setUserId] = useState<string>('global');
+    const [finalVideoIsPlaying, setFinalVideoIsPlaying] = useState(false);
+    const [finalVideoPreciseTime, setFinalVideoPreciseTime] = useState(0);
+    const finalVideoRef = useRef<HTMLVideoElement>(null);
+
+    useEffect(() => {
+        let rafId: number;
+        const update = () => {
+            if (finalVideoRef.current && finalVideoIsPlaying) {
+                setFinalVideoPreciseTime(finalVideoRef.current.currentTime);
+            }
+            rafId = requestAnimationFrame(update);
+        };
+        update();
+        return () => cancelAnimationFrame(rafId);
+    }, [finalVideoIsPlaying]);
 
     const copyToClipboard = (text: string, id: string) => {
         navigator.clipboard.writeText(text);
         setCopiedId(id);
         setTimeout(() => setCopiedId(null), 2000);
     };
-    const [processingState, setProcessingState] = useState<{ isOpen: boolean; url: string; engine: 'openai' | 'elevenlabs' }>({
+
+    useEffect(() => {
+        let id = localStorage.getItem('clipper_user_id');
+        if (!id) {
+            id = `user_${Math.random().toString(36).substring(2, 15)}`;
+            localStorage.setItem('clipper_user_id', id);
+        }
+        setUserId(id);
+    }, []);
+
+    const [processingState, setProcessingState] = useState<{ isOpen: boolean; url: string; engine: 'openai' | 'elevenlabs'; userId?: string }>({
         isOpen: false,
         url: '',
-        engine: 'openai'
+        engine: 'openai',
+        userId: 'global'
     });
 
     useEffect(() => {
         const handleProcessEvent = (e: any) => {
-            const { url, engine } = e.detail;
-            setProcessingState({ isOpen: true, url, engine });
+            const { url, engine, userId: eventUserId } = e.detail;
+            setProcessingState({ isOpen: true, url, engine, userId: eventUserId || userId });
         };
 
         const handlePreviewEvent = (e: any) => {
@@ -115,10 +147,85 @@ export default function TranscriptsClient({ transcripts, initialQuery, initialAg
         }
     };
 
-    const defaultVideoUrl = transcripts?.[0]?._source?.filename || undefined;
+    const [isEditorActive, setIsEditorActive] = useState(false);
+    const [editorSessionState, setEditorSessionState] = useState<{
+        voiceoverBlocks: any[];
+        trimStart: number;
+        trimEnd: number;
+        captionStyles: any;
+        isEditorActive: boolean;
+        showFullVideo: boolean;
+        fullVideoUrl: string | null;
+        timestamp: any;
+        clipUrl?: string | null;
+    } | null>(null);
+
+    // PERSISTENCE SYNC: Sync with Cloudflare Durable State Worker / LocalStorage for true durability
+    useEffect(() => {
+        const SESSION_ID = userId || 'default';
+        const WORKER_URL = 'https://durable-state.akdeepaknyc.workers.dev';
+
+        const loadRemoteState = async () => {
+            if (!editorSessionState) {
+                try {
+                    const res = await fetch(`${WORKER_URL}?sessionId=${SESSION_ID}`);
+                    if (res.ok) {
+                        const remoteState = await res.json();
+                        if (remoteState && Object.keys(remoteState).length > 0) {
+                            setEditorSessionState(remoteState);
+                            return;
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Durable State fetch failed, falling back to local:', e);
+                }
+
+                // Fallback to local storage if remote fails or is empty
+                const saved = localStorage.getItem('clipper_editor_session');
+                if (saved) {
+                    try {
+                        const parsed = JSON.parse(saved);
+                        setEditorSessionState(parsed);
+                    } catch (e) {}
+                }
+            }
+        };
+
+        loadRemoteState();
+    }, [userId]);
+
+    useEffect(() => {
+        if (!editorSessionState) return;
+
+        const syncState = async () => {
+            const SESSION_ID = userId || 'default';
+            const WORKER_URL = 'https://durable-state.akdeepaknyc.workers.dev';
+
+            // 1. Local Persistence
+            localStorage.setItem('clipper_editor_session', JSON.stringify(editorSessionState));
+
+            // 2. Cloud Persistence (Cloudflare KV via Worker)
+            try {
+                await fetch(`${WORKER_URL}?sessionId=${SESSION_ID}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(editorSessionState)
+                });
+            } catch (e) {
+                console.error('Failed to sync to Durable State Worker:', e);
+            }
+        };
+
+        const timeoutId = setTimeout(syncState, 1000); // Debounce sync
+        return () => clearTimeout(timeoutId);
+    }, [editorSessionState, userId]);
+
+    const effectiveVideoUrl = videoUrl || transcripts?.[0]?._source?.filename || undefined;
 
     return (
-        <div className="flex gap-6 h-full flex-1 min-h-0 animate-fade-in overflow-hidden relative">
+        <div className="flex flex-col h-full flex-1 min-h-0 overflow-hidden pt-6">
+
+            <div className="flex gap-6 h-full flex-1 min-h-0 animate-fade-in overflow-hidden relative">
             {/* Left Column - Large Workspace (Chat/Transcripts OR Finalized Mode) */}
             <div
                 className={`flex flex-col h-full min-h-0 transition-all duration-700 cubic-bezier(0.4, 0, 0.2, 1) overflow-hidden ${isMinimized ? 'w-[72px] flex-shrink-0' : 'flex-1 min-w-[400px]'
@@ -153,8 +260,8 @@ export default function TranscriptsClient({ transcripts, initialQuery, initialAg
                         <div className={`flex-1 flex flex-col min-w-0 min-h-0 transition-all duration-700 ${isMinimized ? 'opacity-0 scale-95 -translate-x-20 blur-sm pointer-events-none' : 'opacity-100 scale-100 translate-x-0'}`}>
                             <div className="flex items-center justify-between mb-8">
                                 <div>
-                                    <h1 className="text-2xl font-bold tracking-tight text-white mb-2">Selected Footage</h1>
-                                    <p className="text-xs text-neutral-500 uppercase tracking-widest font-bold">Processed & Ready for Socials</p>
+                                    <h1 className="text-2xl font-bold tracking-tight text-white mb-2">Final Production</h1>
+                                    <p className="text-xs text-neutral-500 uppercase tracking-widest font-bold">Processed & Ready for Export</p>
                                 </div>
                                 <div className="flex items-center gap-3">
                                     <button
@@ -162,6 +269,22 @@ export default function TranscriptsClient({ transcripts, initialQuery, initialAg
                                         className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-neutral-400 hover:text-white transition-all text-[10px] font-black uppercase tracking-widest border border-white/10"
                                     >
                                         Back to Editor
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            const link = document.createElement('a');
+                                            link.href = finalizedClip.clipUrl;
+                                            link.download = `production_${Date.now()}.mp4`;
+                                            document.body.appendChild(link);
+                                            link.click();
+                                            document.body.removeChild(link);
+                                        }}
+                                        className="px-6 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white transition-all text-[10px] font-black uppercase tracking-widest shadow-[0_0_20px_rgba(225,29,72,0.4)] flex items-center gap-2"
+                                    >
+                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                        </svg>
+                                        Download Master
                                     </button>
                                     <button
                                         onClick={() => setIsMinimized(true)}
@@ -177,13 +300,19 @@ export default function TranscriptsClient({ transcripts, initialQuery, initialAg
 
                             <div className="flex-1 min-h-0 bg-black rounded-3xl overflow-hidden shadow-2xl border border-white/5 relative group">
                                 <video
+                                    ref={finalVideoRef}
                                     src={finalizedClip.clipUrl}
                                     controls
                                     autoPlay
+                                    onPlay={() => setFinalVideoIsPlaying(true)}
+                                    onPause={() => setFinalVideoIsPlaying(false)}
                                     className="w-full h-full object-contain"
                                 />
+                                
+                                {/* Captions are now burned into the video file by the backend FFmpeg process */}
+
                                 <div className="absolute top-6 left-6 px-4 py-2 bg-rose-500 text-white rounded-lg text-[10px] font-black uppercase tracking-widest shadow-xl opacity-0 group-hover:opacity-100 transition-opacity">
-                                    Final Cut
+                                    Full Quality Master
                                 </div>
                             </div>
                         </div>
@@ -196,169 +325,39 @@ export default function TranscriptsClient({ transcripts, initialQuery, initialAg
                         onTimestampClick={setSelectedTimestamp}
                         isMinimized={isMinimized}
                         onToggleMinimize={() => setIsMinimized(!isMinimized)}
+                        videoUrl={effectiveVideoUrl}
                     />
                 )}
             </div>
 
-            {/* Right Column - Secondary Workspace (Preview OR Social Generation) */}
+            {/* Right Column - Secondary Workspace (Preview OR Social Generation) - Hidden in Finalized Mode */}
+            {!finalizedClip && (
             <div
                 className={`flex flex-col h-full min-h-0 transition-all duration-700 cubic-bezier(0.4, 0, 0.2, 1) flex-1 overflow-hidden min-w-[300px]`}
             >
-                {finalizedClip ? (
-                    <div className="flex flex-col h-full glass-card rounded-2xl border-white/10 p-8 animate-fade-in bg-white/[0.02]">
-                        <div className="mb-10">
-                            <h2 className="text-xl font-bold text-white mb-2">Meta Intelligence</h2>
-                            <p className="text-xs text-neutral-500 font-medium">Generate viral hooks and metadata</p>
-                        </div>
-
-                        {!socialMeta ? (
-                            <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
-                                <div className="w-20 h-20 mb-8 flex items-center justify-center rounded-3xl bg-white/[0.03] border border-white/10 text-rose-500 animate-pulse">
-                                    <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                                    </svg>
-                                </div>
-                                <h3 className="text-lg font-bold text-white mb-3">AI Context Engine</h3>
-                                <p className="text-sm text-neutral-500 leading-relaxed mb-10 max-w-xs">
-                                    Our agent will analyze the segment transcript to generate professional metadata optimized for viral growth.
-                                </p>
-                                <button
-                                    onClick={handleGenerateSocial}
-                                    disabled={isGeneratingMeta}
-                                    className="w-full py-5 bg-white text-black rounded-2xl font-black uppercase tracking-widest text-[11px] hover:scale-[1.02] active:scale-95 transition-all shadow-2xl shadow-white/5 disabled:opacity-50"
-                                >
-                                    {isGeneratingMeta ? (
-                                        <div className="flex items-center justify-center gap-3">
-                                            <div className="w-4 h-4 border-2 border-black/10 border-t-black rounded-full animate-spin" />
-                                            Analyzing Content...
-                                        </div>
-                                    ) : (
-                                        "Generate Social Metadata"
-                                    )}
-                                </button>
-                            </div>
-                        ) : (
-                            <div className="flex-1 overflow-y-auto pr-2 space-y-6 custom-scrollbar pb-10">
-                                {/* Title Block */}
-                                <div
-                                    onClick={() => copyToClipboard(socialMeta.title, 'title')}
-                                    className="group relative space-y-3 cursor-pointer p-6 bg-white/[0.03] border border-white/10 rounded-3xl hover:bg-white/[0.06] hover:border-white/20 transition-all active:scale-[0.99]"
-                                >
-                                    <div className="flex items-center justify-between">
-                                        <label className="text-[10px] font-black uppercase tracking-[0.2em] text-rose-500 flex items-center gap-2">
-                                            <div className="w-1 h-1 rounded-full bg-rose-500 animate-pulse" />
-                                            Suggested Title
-                                        </label>
-                                        <span className={`text-[9px] font-bold uppercase tracking-widest transition-opacity ${copiedId === 'title' ? 'text-emerald-400 opacity-100' : 'text-neutral-500 opacity-0 group-hover:opacity-100'}`}>
-                                            {copiedId === 'title' ? 'Copied!' : 'Click to Copy'}
-                                        </span>
-                                    </div>
-                                    <div className="text-xl text-white font-bold leading-tight pr-4">
-                                        {socialMeta.title}
-                                    </div>
-                                </div>
-
-                                {/* Viral Hook */}
-                                <div
-                                    onClick={() => copyToClipboard(socialMeta.hook, 'hook')}
-                                    className="group relative space-y-3 cursor-pointer p-6 bg-emerald-500/[0.03] border border-emerald-500/10 rounded-3xl hover:bg-emerald-500/[0.08] hover:border-emerald-500/30 transition-all active:scale-[0.99]"
-                                >
-                                    <div className="flex items-center justify-between">
-                                        <label className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-500 flex items-center gap-2">
-                                            <div className="w-1.5 h-1.5 bg-emerald-500 rounded-sm rotate-45" />
-                                            Viral Hook
-                                        </label>
-                                        <span className={`text-[9px] font-bold uppercase tracking-widest transition-opacity ${copiedId === 'hook' ? 'text-emerald-400 opacity-100' : 'text-neutral-500 opacity-0 group-hover:opacity-100'}`}>
-                                            {copiedId === 'hook' ? 'Copied!' : 'Click to Copy'}
-                                        </span>
-                                    </div>
-                                    <div className="text-base text-emerald-100 italic font-medium leading-relaxed pr-4">
-                                        "{socialMeta.hook}"
-                                    </div>
-                                </div>
-
-                                {/* Description */}
-                                <div
-                                    onClick={() => copyToClipboard(socialMeta.description, 'desc')}
-                                    className="group relative space-y-3 cursor-pointer p-6 bg-white/[0.02] border border-white/5 rounded-3xl hover:bg-white/[0.05] hover:border-white/10 transition-all active:scale-[0.99]"
-                                >
-                                    <div className="flex items-center justify-between">
-                                        <label className="text-[10px] font-black uppercase tracking-[0.2em] text-neutral-500">Social Description</label>
-                                        <span className={`text-[9px] font-bold uppercase tracking-widest transition-opacity ${copiedId === 'desc' ? 'text-emerald-400 opacity-100' : 'text-neutral-500 opacity-0 group-hover:opacity-100'}`}>
-                                            {copiedId === 'desc' ? 'Copied!' : 'Click to Copy'}
-                                        </span>
-                                    </div>
-                                    <div className="text-sm text-neutral-400 leading-relaxed font-light pr-4">
-                                        {socialMeta.description}
-                                    </div>
-                                </div>
-
-                                {/* Tags Block */}
-                                <div
-                                    onClick={() => copyToClipboard(socialMeta.tags.map(t => `#${t}`).join(' '), 'tags')}
-                                    className="group relative space-y-4 cursor-pointer p-6 bg-white/[0.01] border border-white/5 rounded-3xl hover:bg-white/[0.03] transition-all"
-                                >
-                                    <div className="flex items-center justify-between">
-                                        <label className="text-[10px] font-black uppercase tracking-[0.2em] text-neutral-600">Smart Tags</label>
-                                        <span className={`text-[9px] font-bold uppercase tracking-widest transition-opacity ${copiedId === 'tags' ? 'text-emerald-400 opacity-100' : 'text-neutral-500 opacity-0 group-hover:opacity-100'}`}>
-                                            {copiedId === 'tags' ? 'Copied All!' : 'Click to Copy All'}
-                                        </span>
-                                    </div>
-                                    <div className="flex flex-wrap gap-2">
-                                        {socialMeta.tags.map((tag, i) => (
-                                            <span key={i} className="px-3 py-1.5 rounded-xl bg-white/5 text-[10px] text-neutral-500 font-mono border border-white/5 group-hover:border-white/10 group-hover:text-neutral-300 transition-colors">
-                                                #{tag}
-                                            </span>
-                                        ))}
-                                    </div>
-                                </div>
-
-                                {/* Expert Analysis Overlay */}
-                                <div className="relative p-6 bg-gradient-to-br from-amber-500/10 to-transparent border border-amber-500/20 rounded-3xl overflow-hidden group">
-                                    <div className="absolute -right-4 -top-4 w-24 h-24 bg-amber-500 opacity-5 blur-3xl rounded-full" />
-                                    <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-500 mb-4 flex items-center gap-2">
-                                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        Strategy Advice
-                                    </h4>
-                                    <p className="text-xs text-amber-200/70 leading-relaxed pr-4 font-medium">
-                                        {socialMeta.platform_advice}
-                                    </p>
-                                </div>
-
-                                <button
-                                    onClick={() => {
-                                        setSocialMeta(null);
-                                        handleGenerateSocial();
-                                    }}
-                                    className="w-full py-4 text-[10px] font-black uppercase tracking-widest text-neutral-600 hover:text-white flex items-center justify-center gap-2 transition-all hover:gap-4"
-                                >
-                                    <span>Regenerate Intelligence</span>
-                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17 8l4 4m0 0l-4 4m4-4H3" />
-                                    </svg>
-                                </button>
-                            </div>
-                        )}
-                    </div>
-                ) : (
-                    <VideoPreview
-                        timestamp={selectedTimestamp}
-                        defaultVideoUrl={defaultVideoUrl}
-                        onFinalize={handleFinalize}
-                        onEditorToggle={(active) => setIsMinimized(active)}
-                    />
-                )}
+                <VideoPreview
+                    timestamp={selectedTimestamp}
+                    defaultVideoUrl={effectiveVideoUrl}
+                    onFinalize={handleFinalize}
+                    initialSessionState={editorSessionState}
+                    onSessionUpdate={setEditorSessionState}
+                    onEditorToggle={(active) => {
+                        setIsMinimized(active);
+                        setIsEditorActive(active);
+                    }}
+                />
             </div>
+            )}
 
             {/* In-Workspace Processing Modal */}
             <ProcessingModal
                 isOpen={processingState.isOpen}
                 videoUrl={processingState.url}
                 engine={processingState.engine}
+                userId={processingState.userId}
                 onClose={() => setProcessingState(prev => ({ ...prev, isOpen: false }))}
             />
         </div>
-    );
+    </div>
+);
 }

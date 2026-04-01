@@ -1,7 +1,4 @@
-
-const KIBANA_URL = process.env.KIBANA_URL || 'https://my-elasticsearch-project-e39dd8.kb.us-central1.gcp.elastic.cloud:443';
-const API_KEY = process.env.ELASTIC_API_KEY || 'c3NQZVVKd0J0bTdQT3lMSkx6cEE6cTBVNzFWVlZBNlpFNjh6VENkb1hNUQ==';
-const AGENT_ID = 'video_transcript_agent';
+import { runChat } from './cloudflare';
 
 interface AgentResponse {
     reply: string;
@@ -9,50 +6,58 @@ interface AgentResponse {
     timestamps?: Array<{ start: string; end: string; text: string }>;
 }
 
-export async function askAgent(query: string, conversationId?: string): Promise<AgentResponse | null> {
+export async function askAgent(query: string, history: any[] = []): Promise<AgentResponse | null> {
     try {
-        const payload: any = {
-            input: query,
-            agent_id: AGENT_ID
-        };
+        // System prompt for the video assistant
+        const systemPrompt = `You are Clipper AI, a professional video intelligence assistant. 
+You answer questions about video content by using the transcripts (verbal) and visual insights (what is seen) provided in the context below.
 
-        if (conversationId) {
-            payload.conversation_id = conversationId;
-        }
+Rules:
+1. Ground your answers ONLY in the provided context. If no context is found for a specific query, politely state that you can't find that in the video.
+2. NEVER ask the user to provide a transcript or video description if context is already provided.
+3. ALWAYS use the provided timestamps (e.g., [00:01:23]) when citing events.
+4. If asked about "red tulips" or specific objects, check the VISUAL CONTEXT section thoroughly.
+5. Be concise, helpful, and maintain a premium, data-driven tone.`;
 
-        const response = await fetch(`${KIBANA_URL}/api/agent_builder/converse`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `ApiKey ${API_KEY}`,
-                'kbn-xsrf': 'true',
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(payload)
-        });
+        // We use Llama 3 on Cloudflare
+        // Inject system prompt first, then history, then current query
+        const messages = [
+            { role: 'system', content: systemPrompt },
+            ...history,
+            { role: 'user', content: query }
+        ];
 
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error('Agent API Error:', response.status, errorText);
-            throw new Error(`Agent API failed: ${response.status} ${errorText}`);
-        }
+        // LOGGING SENT DATA
+        console.log('\n--- [LLM REQUEST] ---');
+        console.log(JSON.stringify(messages, null, 2));
 
-        const data = await response.json();
+        const result = await runChat(messages);
+        
+        // LOGGING RECEIVED DATA
+        console.log('--- [LLM RESPONSE] ---');
+        console.log(result?.response || 'EMPTY RESPONSE');
+        console.log('----------------------\n');
 
-        // Map Kibana Agent response to AgentResponse
-        const reply = data.response?.message || (data.messages && data.messages.length > 0 ? data.messages[data.messages.length - 1].content : 'No reply text found.');
+        const reply = result?.response || 'I am sorry, I am having trouble processing that request through Cloudflare AI.';
 
-        // Extract timestamps if present in the response
-        const timestamps = data.response?.timestamps || data.timestamps || [];
+        // Simple regex to extract common timestamp patterns if the AI generated them but didn't format them
+        const timestampRegex = /\[?(\d{2}:\d{2}:\d{2})\]?/g;
+        const found = [...reply.matchAll(timestampRegex)];
+        const timestamps = found.map(f => ({
+            start: f[1],
+            end: f[1],
+            text: 'Referenced moment'
+        }));
 
         return {
             reply: reply,
-            conversation_id: data.conversation_id || '',
+            conversation_id: Date.now().toString(),
             timestamps: timestamps.length > 0 ? timestamps : undefined
         };
     } catch (error: any) {
-        console.error('Agent Request Failed:', error);
+        console.error('Cloudflare Agent Request Failed:', error);
         return {
-            reply: `Debug Error: ${error.message}`,
+            reply: `Cloudflare AI Error: ${error.message}. Please check your Cloudflare configuration.`,
             conversation_id: ''
         };
     }

@@ -20,7 +20,7 @@ interface VisualFrameData {
 
 export async function POST(request: NextRequest) {
     try {
-        const { videoUrl, apiKey: requestApiKey } = await request.json();
+        const { videoUrl, apiKey: requestApiKey, userId = 'global' } = await request.json();
         const apiKey = process.env.OPENAI_API_KEY || requestApiKey;
 
         if (!videoUrl) {
@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
         initStatus(processingId);
 
         // Start async processing
-        processVisuals(videoUrl, apiKey, processingId).catch(console.error);
+        processVisuals(videoUrl, apiKey, processingId, userId).catch(console.error);
 
         return NextResponse.json({
             processingId,
@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
     }
 }
 
-async function processVisuals(videoUrl: string, apiKey: string, processingId: string) {
+async function processVisuals(videoUrl: string, apiKey: string, processingId: string, userId: string) {
     const tempDir = path.join(os.tmpdir(), `visuals-${processingId}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -188,7 +188,7 @@ async function processVisuals(videoUrl: string, apiKey: string, processingId: st
             progress: 95
         });
 
-        await indexVisuals(frameData, videoUrl);
+        await indexVisuals(frameData, videoUrl, userId);
 
         updateStatus(processingId, {
             stage: 'complete',
@@ -211,12 +211,13 @@ async function processVisuals(videoUrl: string, apiKey: string, processingId: st
     }
 }
 
-import { generateEmbeddings, upsertVectors } from '@/lib/cloudflare';
+import crypto from 'crypto';
+import { generateEmbeddings, upsertVectors, putR2 } from '@/lib/cloudflare';
 
-async function indexVisuals(frameData: VisualFrameData[], videoUrl: string) {
+async function indexVisuals(frameData: VisualFrameData[], videoUrl: string, userId: string) {
     const indexName = 'visual_transcript';
     const uploadDate = new Date().toISOString();
-    const videoId = Buffer.from(videoUrl).toString('base64').substring(0, 16);
+    const videoId = crypto.createHash('md5').update(videoUrl).digest('hex');
 
     // Generate embeddings for all frame descriptions
     const descriptions = frameData.map(d => d.description);
@@ -234,6 +235,8 @@ async function indexVisuals(frameData: VisualFrameData[], videoUrl: string) {
             colors: data.colors.join(', '),
             ocr_text: data.ocr_text,
             filename: videoUrl,
+            video_id: videoId,
+            user_id: userId,
             uploaded_at: uploadDate
         }
     }));
@@ -242,6 +245,14 @@ async function indexVisuals(frameData: VisualFrameData[], videoUrl: string) {
     const batchSize = 100;
     for (let i = 0; i < vectors.length; i += batchSize) {
         await upsertVectors(indexName, vectors.slice(i, i + batchSize));
+    }
+
+    // EXTRA: Store raw visual data in R2 for persistence/fallback
+    try {
+        await putR2(`visuals/${videoId}.json`, frameData);
+        console.log(`[R2] Raw visual data indexed: visuals/${videoId}.json`);
+    } catch (e) {
+        console.warn("[R2] Failed to save raw visuals to R2:", e);
     }
 }
 

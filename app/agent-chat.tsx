@@ -123,14 +123,22 @@ export default function AgentChat() {
         setIsLoading(true);
 
         try {
-            const response = await chatWithAgent(userMessage.content, conversationId);
-            if (response && response.reply) {
-                setConversationId(response.conversation_id);
+            // Get video URL from search params if needed, or pass from state
+            const params = new URLSearchParams(window.location.search);
+            const videoUrl = params.get('url') || undefined;
+            const currentUserId = params.get('userId') || 'global';
+
+            const response = await chatWithAgent(userMessage.content, conversationId, currentUserId, videoUrl);
+
+            if (response && !('error' in response) && typeof response.reply === 'string') {
+                const reply = response.reply;
+                const conversation_id = response.conversation_id as string;
+                setConversationId(conversation_id);
                 setMessages(prev => [...prev, {
                     id: (Date.now() + 1).toString(),
                     role: 'agent',
-                    content: response.reply,
-                    timestamps: parseTimestamps(response.reply)
+                    content: reply,
+                    timestamps: parseTimestamps(reply)
                 }]);
             }
         } catch (error) {

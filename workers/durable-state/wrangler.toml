@@ -1,0 +1,10 @@
+name = "durable-state"
+main = "src/index.ts"
+compatibility_date = "2024-04-01"
+
+[[kv_namespaces]]
+binding = "EDITOR_STATE_KV"
+id = "6ecbecb50b634caaa61e3e2afebc263f"
+
+[ai]
+binding = "AI"

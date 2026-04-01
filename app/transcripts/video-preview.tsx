@@ -5,29 +5,100 @@ import { useState, useEffect, useRef } from 'react';
 interface VideoPreviewProps {
     timestamp: { start: string; end: string; videoUrl?: string } | null;
     defaultVideoUrl?: string;
-    onFinalize?: (data: { clipUrl: string; startTime: string; endTime: string; sourceUrl: string }) => void;
+    onFinalize?: (data: { 
+        clipUrl: string; 
+        startTime: string; 
+        endTime: string; 
+        sourceUrl: string;
+        voiceoverBlocks?: any[];
+        captionStyles?: any;
+        showCaptions?: boolean;
+        muteOriginal?: boolean;
+    }) => void;
     onEditorToggle?: (isActive: boolean) => void;
+    initialSessionState?: any;
+    onSessionUpdate?: (state: any) => void;
 }
 
-export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, onEditorToggle }: VideoPreviewProps) {
+export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, onEditorToggle, initialSessionState, onSessionUpdate }: VideoPreviewProps) {
     const [isLoading, setIsLoading] = useState(false);
-    const [clipUrl, setClipUrl] = useState<string | null>(null);
+    const [clipUrl, setClipUrl] = useState<string | null>(initialSessionState?.clipUrl || null);
     const [error, setError] = useState<string | null>(null);
-    const [showFullVideo, setShowFullVideo] = useState(false);
-    const [fullVideoUrl, setFullVideoUrl] = useState<string | null>(null);
+    const [showFullVideo, setShowFullVideo] = useState(initialSessionState?.showFullVideo || false);
+    const [fullVideoUrl, setFullVideoUrl] = useState<string | null>(initialSessionState?.fullVideoUrl || null);
     const [isDownloadingFull, setIsDownloadingFull] = useState(false);
-    const [isEditorActive, setIsEditorActive] = useState(false);
-    const [trimStart, setTrimStart] = useState(0);
-    const [trimEnd, setTrimEnd] = useState(60);
+    const [isEditorActive, setIsEditorActive] = useState(initialSessionState?.isEditorActive || false);
+    const [trimStart, setTrimStart] = useState(initialSessionState?.trimStart || 0);
+    const [trimEnd, setTrimEnd] = useState(initialSessionState?.trimEnd || 60);
     const [videoDuration, setVideoDuration] = useState(0);
     const [isTrimming, setIsTrimming] = useState(false);
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(0);
     const [volume, setVolume] = useState(1);
     const [isMuted, setIsMuted] = useState(false);
+    const [voiceoverBlocks, setVoiceoverBlocks] = useState<any[]>(initialSessionState?.voiceoverBlocks || []);
+    const [isGeneratingVoice, setIsGeneratingVoice] = useState(false);
+    const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
 
     const videoRef = useRef<HTMLVideoElement>(null);
-    const [activeHandle, setActiveHandle] = useState<'start' | 'end' | 'playhead' | null>(null);
+    const voiceoverRef = useRef<HTMLAudioElement | null>(null);
+    const [activeHandle, setActiveHandle] = useState<'start' | 'end' | 'playhead' | 'voice-drag' | null>(null);
+    const [grabOffset, setGrabOffset] = useState(0); // Offset in seconds from block start
+    const [showVoiceEditor, setShowVoiceEditor] = useState(true);
+    const [isMagicModalOpen, setIsMagicModalOpen] = useState(false);
+    const [magicPrompt, setMagicPrompt] = useState("");
+    const [isMagicLoading, setIsMagicLoading] = useState(false);
+    const [isGeneratingAll, setIsGeneratingAll] = useState(false);
+    const [voices, setVoices] = useState<any[]>([]);
+    const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
+    const [defaultVoiceId, setDefaultVoiceId] = useState<string | null>(null);
+    const [activeSelectionBlockId, setActiveSelectionBlockId] = useState<string | null>(null);
+    const [isFinalPreview, setIsFinalPreview] = useState(false);
+    const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
+    const [preciseTime, setPreciseTime] = useState(0);
+    const [magicStatus, setMagicStatus] = useState("Analyzing Multimedia Intelligence");
+    const [magicProgress, setMagicProgress] = useState(0);
+    const [showCaptions, setShowCaptions] = useState(initialSessionState?.showCaptions ?? true);
+    const [muteOriginal, setMuteOriginal] = useState(initialSessionState?.muteOriginal ?? false);
+    const [captionStyles, setCaptionStyles] = useState<{
+        position: 'top' | 'center' | 'bottom' | 'bottom-flush',
+        size: 'xs' | 'small' | 'medium' | 'large',
+        color: 'amber' | 'rose' | 'cyan' | 'white',
+        theme: 'glass' | 'solid' | 'minimal' | 'transparent',
+        width: 'normal' | 'wide' | 'full',
+        padding: 'compact' | 'normal' | 'relaxed',
+        highlight: boolean
+    }>(initialSessionState?.captionStyles || {
+        position: 'bottom',
+        size: 'medium',
+        color: 'amber',
+        theme: 'glass',
+        width: 'normal',
+        padding: 'normal',
+        highlight: true
+    });
+    const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+
+    useEffect(() => {
+        let rafId: number;
+        const update = () => {
+            if (videoRef.current && isPlaying) {
+                setPreciseTime(videoRef.current.currentTime);
+            }
+            rafId = requestAnimationFrame(update);
+        };
+        update();
+        return () => cancelAnimationFrame(rafId);
+    }, [isPlaying]);
+
+    useEffect(() => {
+        fetch('/api/voices')
+            .then(res => res.json())
+            .then(data => {
+                if (data.voices) setVoices(data.voices);
+            })
+            .catch(err => console.error('Failed to load voices:', err));
+    }, []);
 
     const parseTime = (s: string) => {
         if (!s) return 0;
@@ -46,9 +117,32 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
     const isYoutube = activeVideoUrl?.includes('youtube.com') || activeVideoUrl?.includes('youtu.be');
 
     useEffect(() => {
-        setIsEditorActive(false);
-        setShowFullVideo(false);
-        setFullVideoUrl(null);
+        onSessionUpdate?.({
+            voiceoverBlocks,
+            trimStart,
+            trimEnd,
+            captionStyles,
+            showCaptions,
+            isEditorActive,
+            showFullVideo,
+            fullVideoUrl,
+            clipUrl,
+            timestamp,
+            muteOriginal
+        });
+    }, [voiceoverBlocks, trimStart, trimEnd, captionStyles, showCaptions, isEditorActive, showFullVideo, fullVideoUrl, clipUrl, timestamp, muteOriginal, onSessionUpdate]);
+
+    useEffect(() => {
+        // Only reset if this is a COMPLETELY new segment coming from the search results
+        if (initialSessionState?.timestamp?.start !== timestamp?.start || initialSessionState?.timestamp?.end !== timestamp?.end) {
+            setIsEditorActive(false);
+            setShowFullVideo(false);
+            setFullVideoUrl(null);
+            setVoiceoverBlocks([]);
+            setTrimStart(0);
+            setTrimEnd(videoDuration || 60);
+        }
+
         if (!timestamp || !activeVideoUrl) {
             setClipUrl(null);
             setError(null);
@@ -56,6 +150,12 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
         }
 
         const loadClip = async () => {
+             // If we already have a clip for this segment in history, use it
+            if (initialSessionState?.clipUrl && initialSessionState?.timestamp?.start === timestamp.start && initialSessionState?.timestamp?.end === timestamp.end) {
+                setClipUrl(initialSessionState.clipUrl);
+                return;
+            }
+
             setIsLoading(true);
             setError(null);
             setClipUrl(null);
@@ -101,12 +201,17 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                 body: JSON.stringify({
                     videoUrl: activeVideoUrl,
                     startTime: formatSeconds(trimStart),
-                    endTime: formatSeconds(trimEnd)
+                    endTime: formatSeconds(trimEnd),
+                    voiceoverBlocks: voiceoverBlocks.filter(b => b.filename), // Pass all valid blocks
+                    captionStyles: captionStyles,
+                    showCaptions: showCaptions,
+                    muteOriginal: muteOriginal
                 })
             });
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'Failed to trim video');
             setClipUrl(data.clipUrl);
+            setIsFinalPreview(true);
             setIsEditorActive(false);
             onEditorToggle?.(false);
             setShowFullVideo(false);
@@ -116,7 +221,11 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                 clipUrl: data.clipUrl,
                 startTime: formatSeconds(trimStart),
                 endTime: formatSeconds(trimEnd),
-                sourceUrl: activeVideoUrl || ''
+                sourceUrl: activeVideoUrl || '',
+                voiceoverBlocks: voiceoverBlocks,
+                captionStyles: captionStyles,
+                showCaptions: showCaptions,
+                muteOriginal: muteOriginal
             });
         } catch (err: any) {
             setError(err.message || 'Failed to trim video');
@@ -163,8 +272,9 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                 setCurrentTime(0);
             }
         }
-        setIsEditorActive(!isEditorActive);
-        onEditorToggle?.(!isEditorActive);
+        const nextEditorState = !isEditorActive;
+        setIsEditorActive(nextEditorState);
+        onEditorToggle?.(nextEditorState); // Minimize sidebar when Editor is active
         setShowFullVideo(false);
     };
 
@@ -196,6 +306,7 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
 
         setShowFullVideo(true);
         setIsEditorActive(false);
+        onEditorToggle?.(true); // Minimize sidebar for immersive viewing
     };
 
     // Ensure playhead is at the start when editor opens or timestamp changes
@@ -222,14 +333,23 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
         return isNaN(dur) ? '0' : dur.toFixed(1);
     };
 
-    const handlePlayPause = () => {
+    const handlePlayPause = async () => {
         if (videoRef.current) {
-            if (isPlaying) {
-                videoRef.current.pause();
-            } else {
-                videoRef.current.play();
+            try {
+                if (isPlaying) {
+                    videoRef.current.pause();
+                    setIsPlaying(false);
+                } else {
+                    const playPromise = videoRef.current.play();
+                    if (playPromise !== undefined) {
+                        await playPromise;
+                    }
+                    setIsPlaying(true);
+                }
+            } catch (err) {
+                console.error("Playback error:", err);
+                setIsPlaying(false);
             }
-            setIsPlaying(!isPlaying);
         }
     };
 
@@ -320,7 +440,11 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                                         clipUrl: clipUrl,
                                         startTime: timestamp?.start || '00:00:00,000',
                                         endTime: timestamp?.end || '00:00:10,000',
-                                        sourceUrl: activeVideoUrl || ''
+                                        sourceUrl: activeVideoUrl || '',
+                                        voiceoverBlocks: voiceoverBlocks,
+                                        captionStyles: captionStyles,
+                                        showCaptions: showCaptions,
+                                        muteOriginal: muteOriginal
                                     })}
                                     className="px-6 h-10 bg-gradient-to-r from-rose-600 to-red-600 text-white text-[10px] font-black uppercase tracking-widest rounded-lg hover:scale-105 active:scale-95 transition-all shadow-[0_0_20px_rgba(225,29,72,0.4)] border border-rose-500/50 flex items-center gap-2"
                                 >
@@ -348,8 +472,27 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                             </svg>
                         </a>
                     )}
+                    {((showFullVideo && (fullVideoUrl || !isYoutube)) || (!showFullVideo && clipUrl)) && !isLoading && !isDownloadingFull && !isEditorActive && (
+                        <button
+                            onClick={handleDownload}
+                            className="w-10 h-10 glass-button rounded-lg flex items-center justify-center bg-white/[0.05] border border-white/10 text-white hover:bg-white hover:text-black transition-all"
+                            title={showFullVideo ? "Download Full Video" : "Download Segment"}
+                        >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            </svg>
+                        </button>
+                    )}
                 </div>
             </div>
+
+            {/* SYNC ENGINE: For multi-track audio preview */}
+            <SyncAudioPreview 
+                isPlaying={isPlaying} 
+                currentTime={currentTime} 
+                trimStart={trimStart} 
+                blocks={voiceoverBlocks} 
+            />
 
             {/* Video Viewport */}
             <div className="flex-1 bg-black relative flex items-center justify-center overflow-hidden">
@@ -361,13 +504,19 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                             </svg>
                         </div>
 
-                        <h3 className="text-lg font-bold text-white mb-2 tracking-tight">No Active Video</h3>
-                        <p className="text-[10px] uppercase tracking-[0.3em] font-black text-rose-500/50 mb-10">Waiting for Ingestion</p>
+                        <h3 className="text-lg font-bold text-white mb-2 tracking-tight">
+                            {activeVideoUrl ? 'Source Ingested' : 'No Active Video'}
+                        </h3>
+                        <p className="text-[10px] uppercase tracking-[0.3em] font-black text-rose-500/50 mb-6">
+                            {activeVideoUrl ? 'Awaiting Segment Isolation' : 'Waiting for Ingestion'}
+                        </p>
 
-                        <div className="flex flex-col gap-6 items-center">
-                            <div className="flex items-center gap-3 px-6 py-4 bg-white/[0.02] border border-white/5 rounded-2xl backdrop-blur-3xl animate-pulse">
-                                <div className="w-2 h-2 rounded-full bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,1)]" />
-                                <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">System Ready: Paste a URL above to begin</span>
+                        <div className="flex flex-col gap-6 items-center w-full max-w-sm">
+                            <div className="w-full flex items-center gap-3 px-6 py-4 bg-white/[0.02] border border-white/5 rounded-2xl backdrop-blur-3xl animate-pulse">
+                                <div className="w-2 h-2 rounded-full bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,1)] flex-shrink-0" />
+                                <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest truncate">
+                                    {activeVideoUrl || 'System Ready: Paste a URL above to begin'}
+                                </span>
                             </div>
 
                             <button
@@ -400,107 +549,655 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                                 <p className="text-[8px] text-red-400/50 uppercase tracking-widest">Error Occurred</p>
                             </div>
                         ) : isEditorActive ? (
-                            <div className="w-full h-full flex flex-col bg-neutral-950 p-6 pt-24">
-                                <div className="flex-1 min-h-0 relative rounded-xl border border-white/5 overflow-hidden group bg-black shadow-inner flex items-center justify-center">
-                                    <video
-                                        ref={videoRef}
-                                        src={fullVideoUrl || (!isYoutube ? activeVideoUrl : undefined)}
-                                        onLoadedMetadata={(e) => {
-                                            const duration = e.currentTarget.duration;
-                                            setVideoDuration(duration);
-                                            // Only set trim end to duration if not already set by a segment
-                                            if (!timestamp) {
-                                                setTrimEnd(duration);
-                                            } else {
-                                                const s = parseTime(timestamp.start);
-                                                e.currentTarget.currentTime = s;
-                                            }
-                                        }}
-                                        onPlay={() => setIsPlaying(true)}
-                                        onPause={() => setIsPlaying(false)}
-                                        onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-                                        className="max-w-full max-h-full object-contain cursor-pointer"
-                                        onClick={handlePlayPause}
-                                    />
-
-                                    {/* Custom Play/Pause Overlay */}
-                                    {!isPlaying && (
-                                        <button
+                        <div 
+                            className="w-full h-full flex flex-col bg-neutral-950 p-6 overflow-y-auto custom-scrollbar select-none pt-10"
+                            onClick={() => setActiveBlockId(null)}
+                        >
+                            {/* Pro-Editor Navigation */}
+                            <div className="flex items-center justify-center mb-8 px-2">
+                                <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
+                                    <button 
+                                        onClick={() => setShowVoiceEditor(true)}
+                                        className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${showVoiceEditor ? 'bg-white text-black shadow-lg shadow-white/5' : 'text-neutral-500 hover:text-white'}`}
+                                    >
+                                        Voiceover Suite
+                                    </button>
+                                    <button 
+                                        onClick={() => setShowVoiceEditor(false)}
+                                        className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${!showVoiceEditor ? 'bg-white text-black shadow-lg shadow-white/5' : 'text-neutral-500 hover:text-white'}`}
+                                    >
+                                        Visual Preview Only
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="flex gap-6 h-full min-h-[400px]">
+                                    {/* Left: Video Preview */}
+                                    <div className="flex-[1.4] relative rounded-xl border border-white/5 overflow-hidden group bg-black shadow-inner flex items-center justify-center">
+                                        <video
+                                            ref={videoRef}
+                                            src={fullVideoUrl || (!isYoutube ? activeVideoUrl : undefined)}
+                                            onLoadedMetadata={(e) => {
+                                                const duration = e.currentTarget.duration;
+                                                setVideoDuration(duration);
+                                                if (!timestamp) {
+                                                    setTrimEnd(duration);
+                                                } else {
+                                                    const s = parseTime(timestamp.start);
+                                                    e.currentTarget.currentTime = s;
+                                                }
+                                            }}
+                                            onPlay={() => {
+                                                setIsPlaying(true);
+                                                if (voiceoverRef.current) {
+                                                    voiceoverRef.current.currentTime = 0;
+                                                    voiceoverRef.current.play().catch(() => {});
+                                                }
+                                            }}
+                                            onPause={() => {
+                                                setIsPlaying(false);
+                                                if (voiceoverRef.current) voiceoverRef.current.pause();
+                                            }}
+                                            onTimeUpdate={(e) => {
+                                                const time = e.currentTarget.currentTime;
+                                                setCurrentTime(time);
+                                                // Strict Loop/Clamp Logic
+                                                if (isEditorActive) {
+                                                    if (time < trimStart) {
+                                                        e.currentTarget.currentTime = trimStart;
+                                                    } else if (time > trimEnd) {
+                                                        e.currentTarget.currentTime = trimStart;
+                                                        if (!isPlaying) e.currentTarget.pause();
+                                                    }
+                                                }
+                                            }}
+                                            className="max-w-full max-h-full object-contain cursor-pointer"
                                             onClick={handlePlayPause}
-                                            className="absolute w-20 h-20 bg-white/10 backdrop-blur-md border border-white/20 rounded-full flex items-center justify-center hover:scale-110 active:scale-95 transition-all shadow-2xl z-20"
-                                        >
-                                            <svg className="w-8 h-8 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
-                                                <path d="M8 5v14l11-7z" />
-                                            </svg>
-                                        </button>
+                                            muted={muteOriginal || isMuted}
+                                        />
+
+                                        {/* Dynamic Captions Overlay (Styled) */}
+                                        {showCaptions && (
+                                            <div className={`absolute inset-0 flex items-center justify-center pointer-events-none px-12 z-20 ${
+                                                captionStyles.position === 'top' ? 'items-start pt-20' : 
+                                                captionStyles.position === 'center' ? 'items-center' : 
+                                                captionStyles.position === 'bottom-flush' ? 'items-end pb-8' :
+                                                'items-end pb-24'
+                                            }`}>
+                                                {voiceoverBlocks
+                                                    .filter(b => b.text.trim())
+                                                    .map(block => {
+                                                        const activeVideoTime = isPlaying ? preciseTime : currentTime;
+                                                        const clipTime = isFinalPreview ? activeVideoTime : activeVideoTime - trimStart;
+                                                        const offsetInBlock = clipTime - block.startTime;
+                                                        const words = block.text.split(' ');
+                                                        
+                                                        if (clipTime >= block.startTime && clipTime <= (block.startTime + (block.duration || 4))) {
+                                                            return (
+                                                                <div key={block.id} className={`text-center animate-in zoom-in-95 fade-in duration-300 ${
+                                                                    captionStyles.width === 'full' ? 'w-full' : captionStyles.width === 'wide' ? 'max-w-4xl' : 'max-w-2xl'
+                                                                } ${
+                                                                    captionStyles.position === 'top' ? 'slide-in-from-top-2' : 
+                                                                    captionStyles.position === 'bottom' ? 'slide-in-from-bottom-2' : ''
+                                                                }`}>
+                                                                    <div className={`rounded-2xl transition-all shadow-2xl ${
+                                                                        captionStyles.padding === 'compact' ? 'px-6 py-2' : 
+                                                                        captionStyles.padding === 'relaxed' ? 'px-12 py-8' : 'px-8 py-4'
+                                                                    } ${
+                                                                        captionStyles.theme === 'glass' ? 'bg-black/70 backdrop-blur-3xl border border-white/10' : 
+                                                                        captionStyles.theme === 'solid' ? 'bg-black border border-white/20' : 
+                                                                        captionStyles.theme === 'minimal' ? 'bg-black/40 border border-white/5' :
+                                                                        'bg-transparent shadow-none border-none'
+                                                                    }`}>
+                                                                        <p className={`font-black text-white leading-tight tracking-tight drop-shadow-lg transition-all ${
+                                                                            captionStyles.size === 'xs' ? 'text-[11px] sm:text-xs tracking-widest uppercase' :
+                                                                            captionStyles.size === 'small' ? 'text-lg' : 
+                                                                            captionStyles.size === 'large' ? 'text-3xl' : 
+                                                                            'text-xl sm:text-2xl'
+                                                                        }`}>
+                                                                            {captionStyles.highlight ? (
+                                                                                (() => {
+                                                                                    const activeRefColor = captionStyles.color === 'amber' ? 'text-amber-500' : captionStyles.color === 'rose' ? 'text-rose-500' : captionStyles.color === 'cyan' ? 'text-cyan-400' : 'text-white underline';
+                                                                                    const activeGlow = captionStyles.color === 'amber' ? 'rgba(245,158,11,0.5)' : captionStyles.color === 'rose' ? 'rgba(244,63,94,0.5)' : captionStyles.color === 'cyan' ? 'rgba(34,211,238,0.5)' : 'rgba(255,255,255,0.5)';
+                                                                                    const clipTime = (isPlaying ? preciseTime : currentTime) - trimStart;
+                                                                                    const offsetInBlock = clipTime - block.startTime;
+                                                                                    const words = block.text.split(' ');
+                                                                                    
+                                                                                    // Use ElevenLabs alignment if available
+                                                                                    if (block.alignment && block.alignment.characters) {
+                                                                                        const chars = block.alignment.characters;
+                                                                                        const starts = block.alignment.character_start_times_seconds;
+                                                                                        
+                                                                                        // Find current character index based on elapsed block time
+                                                                                        let activeCharIdx = -1;
+                                                                                        for (let i = 0; i < starts.length; i++) {
+                                                                                            if (offsetInBlock >= starts[i]) {
+                                                                                                activeCharIdx = i;
+                                                                                            } else {
+                                                                                                break;
+                                                                                            }
+                                                                                        }
+                                                                                        
+                                                                                        // Map character index to word index
+                                                                                        let currentWordIdx = 0;
+                                                                                        let charTraversed = 0;
+                                                                                        let activeWordIdx = -1;
+
+                                                                                        words.forEach((word: string, wIdx: number) => {
+                                                                                            const wordRangeStart = charTraversed;
+                                                                                            const wordRangeEnd = charTraversed + word.length;
+                                                                                            if (activeCharIdx >= wordRangeStart && activeCharIdx < wordRangeEnd) {
+                                                                                                activeWordIdx = wIdx;
+                                                                                            }
+                                                                                            charTraversed += word.length + 1; // +1 for space
+                                                                                        });
+
+                                                                                        return words.map((word: string, i: number) => (
+                                                                                            <span key={i} className={`transition-all duration-300 ${i === activeWordIdx ? `${activeRefColor} scale-110 drop-shadow-[0_0_10px_${activeGlow}]` : 'opacity-30'}`}>
+                                                                                                {word}{' '}
+                                                                                            </span>
+                                                                                        ));
+                                                                                    }
+                                                                                    
+                                                                                    // Fallback: Estimation
+                                                                                    const timePerWord = (block.duration || 4) / words.length;
+                                                                                    const activeIndex = Math.floor(offsetInBlock / timePerWord);
+                                                                                    return words.map((word: string, i: number) => (
+                                                                                        <span key={i} className={`transition-all duration-300 ${i === activeIndex ? activeRefColor : 'opacity-30'}`}>
+                                                                                            {word}{' '}
+                                                                                        </span>
+                                                                                    ));
+                                                                                })()
+                                                                            ) : block.text}
+                                                                        </p>
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        }
+                                                        return null;
+                                                    })}
+                                            </div>
+                                        )}
+
+                                        <div className="absolute inset-x-0 bottom-1 p-4 flex items-center justify-between bg-gradient-to-t from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity z-30">
+                                            <div className="flex items-center gap-4">
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); handlePlayPause(); }}
+                                                    className="w-10 h-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:bg-white hover:text-black transition-all"
+                                                >
+                                                    {isPlaying ? 
+                                                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg> : 
+                                                        <svg className="w-4 h-4 ml-1" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                                                    }
+                                                </button>
+                                                <div className="text-[10px] font-mono text-neutral-400">
+                                                    {Math.floor(currentTime / 60)}:{(currentTime % 60).toFixed(0).padStart(2, '0')} / {Math.floor(videoDuration / 60)}:{(videoDuration % 60).toFixed(0).padStart(2, '0')}
+                                                </div>
+                                            </div>
+
+                                            <div className="flex items-center gap-3">
+                                                {/* Caption Style Menu */}
+                                                <div className="flex bg-black/40 backdrop-blur-xl border border-white/10 rounded-xl overflow-hidden shadow-2xl">
+                                                    <button 
+                                                        onClick={(e) => { e.stopPropagation(); setCaptionStyles(s => ({ ...s, position: s.position === 'bottom' ? 'bottom-flush' : s.position === 'bottom-flush' ? 'top' : s.position === 'top' ? 'center' : 'bottom'})); }}
+                                                        className="w-10 h-10 flex items-center justify-center text-neutral-500 hover:text-white transition-all border-r border-white/5"
+                                                        title="Position"
+                                                    >
+                                                        <svg className={`w-4 h-4 transition-transform ${captionStyles.position === 'top' ? '-rotate-180' : captionStyles.position === 'center' ? 'rotate-90' : captionStyles.position === 'bottom-flush' ? 'rotate-180 opacity-50' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 13l-7 7-7-7m14-8l-7 7-7-7" /></svg>
+                                                    </button>
+                                                    <button 
+                                                        onClick={(e) => { e.stopPropagation(); setCaptionStyles(s => ({ ...s, size: s.size === 'xs' ? 'small' : s.size === 'small' ? 'medium' : s.size === 'medium' ? 'large' : 'xs'})); }}
+                                                        className="w-10 h-10 flex items-center justify-center text-[10px] font-black uppercase text-neutral-500 hover:text-white transition-all border-r border-white/5"
+                                                        title="Size"
+                                                    >
+                                                        {captionStyles.size.toUpperCase().slice(0, 2)}
+                                                    </button>
+                                                    <button 
+                                                        onClick={(e) => { e.stopPropagation(); setCaptionStyles(s => ({ ...s, color: s.color === 'amber' ? 'rose' : s.color === 'rose' ? 'cyan' : s.color === 'cyan' ? 'white' : 'amber'})); }}
+                                                        className="w-10 h-10 flex items-center justify-center transition-all border-r border-white/5"
+                                                        title="Highlight Color"
+                                                    >
+                                                        <div className={`w-3 h-3 rounded-full border border-white/20 ${captionStyles.color === 'amber' ? 'bg-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.5)]' : captionStyles.color === 'rose' ? 'bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.5)]' : captionStyles.color === 'cyan' ? 'bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.5)]' : 'bg-white shadow-[0_0_10px_rgba(255,255,255,0.5)]'}`} />
+                                                    </button>
+                                                    <button 
+                                                        onClick={(e) => { e.stopPropagation(); setCaptionStyles(s => ({ ...s, theme: s.theme === 'glass' ? 'solid' : s.theme === 'solid' ? 'minimal' : s.theme === 'minimal' ? 'transparent' : 'glass'})); }}
+                                                        className="w-10 h-10 flex items-center justify-center text-neutral-500 hover:text-white transition-all border-r border-white/5"
+                                                        title="Theme"
+                                                    >
+                                                        <div className={`w-3 h-3 rounded-full border-2 border-current transition-colors ${captionStyles.theme === 'solid' ? 'bg-current' : captionStyles.theme === 'minimal' ? 'border-dashed' : captionStyles.theme === 'transparent' ? 'border-dotted' : ''}`} />
+                                                    </button>
+                                                    <button 
+                                                        onClick={(e) => { e.stopPropagation(); setCaptionStyles(s => ({ ...s, width: s.width === 'normal' ? 'wide' : s.width === 'wide' ? 'full' : 'normal'})); }}
+                                                        className="w-10 h-10 flex items-center justify-center text-neutral-500 hover:text-white transition-all border-r border-white/5"
+                                                        title="Width"
+                                                    >
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h8m-8 5h8m-8 5h8m-4-10V3m0 18v-4" /></svg>
+                                                    </button>
+                                                    <button 
+                                                        onClick={(e) => { e.stopPropagation(); setCaptionStyles(s => ({ ...s, padding: s.padding === 'normal' ? 'compact' : s.padding === 'compact' ? 'relaxed' : 'normal'})); }}
+                                                        className="w-10 h-10 flex items-center justify-center text-neutral-500 hover:text-white transition-all border-r border-white/5"
+                                                        title="Height (Padding)"
+                                                    >
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" /></svg>
+                                                    </button>
+                                                    <button 
+                                                        onClick={(e) => { e.stopPropagation(); setCaptionStyles(s => ({ ...s, highlight: !s.highlight })); }}
+                                                        className={`w-10 h-10 flex items-center justify-center transition-all ${captionStyles.highlight ? 'text-amber-500' : 'text-neutral-500 hover:text-white'}`}
+                                                        title="Word Highlighting"
+                                                    >
+                                                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+                                                    </button>
+                                                </div>
+
+                                                <button 
+                                                    onClick={(e) => { e.stopPropagation(); setMuteOriginal(!muteOriginal); }}
+                                                    className={`w-10 h-10 rounded-xl border transition-all flex items-center justify-center ${muteOriginal ? 'bg-rose-500 text-white border-rose-500 shadow-lg shadow-rose-500/20' : 'bg-black/40 backdrop-blur-xl border-white/10 text-white/40 hover:text-white'}`}
+                                                    title={muteOriginal ? "Unmute Original Video" : "Mute Original Video"}
+                                                >
+                                                    {muteOriginal ? (
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+                                                        </svg>
+                                                    ) : (
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                                                        </svg>
+                                                    )}
+                                                </button>
+
+                                                <button 
+                                                    onClick={(e) => { e.stopPropagation(); setShowCaptions(!showCaptions); }}
+                                                    className={`w-10 h-10 rounded-xl border transition-all flex flex-col items-center justify-center gap-0.5 ${showCaptions ? 'bg-amber-500 text-black border-amber-500 shadow-lg shadow-amber-500/20' : 'bg-black/40 backdrop-blur-xl border-white/10 text-white/40 hover:text-white'}`}
+                                                >
+                                                    <span className="text-[9px] font-black leading-none uppercase">CC</span>
+                                                    <div className={`w-3 h-0.5 rounded-full transition-all ${showCaptions ? 'bg-black/40' : 'bg-white/20'}`} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                        {!isPlaying && (
+                                            <button
+                                                onClick={handlePlayPause}
+                                                className="absolute w-12 h-12 bg-white/10 backdrop-blur-md border border-white/20 rounded-full flex items-center justify-center hover:scale-110 active:scale-95 transition-all shadow-2xl z-20"
+                                            >
+                                                <svg className="w-5 h-5 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+                                                    <path d="M8 5v14l11-7z" />
+                                                </svg>
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {/* AI Voiceover Suite (Toggleable) */}
+                                    {showVoiceEditor && (
+                                        <div className="flex-[1.6] flex flex-col gap-6 p-6 bg-white/[0.02] border border-white/10 rounded-2xl backdrop-blur-3xl overflow-y-auto animate-in fade-in slide-in-from-right-4 duration-300">
+                                            <div className="flex items-center justify-between">
+                                                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-500">Voice Timeline</h3>
+                                                <div className="flex items-center gap-2">
+                                                    <button
+                                                        onClick={async (e) => {
+                                                            e.stopPropagation();
+                                                            if (isGeneratingAll) return;
+                                                            setIsGeneratingAll(true);
+                                                            try {
+                                                                const pendingBlocks = voiceoverBlocks.filter(b => !b.audioUrl && b.text.trim());
+                                                                const updatedBlocks = [...voiceoverBlocks];
+
+                                                                for (const block of pendingBlocks) {
+                                                                    const res = await fetch('/api/synthesize', {
+                                                                        method: 'POST',
+                                                                        headers: { 'Content-Type': 'application/json' },
+                                                                        body: JSON.stringify({ 
+                                                                            text: block.text,
+                                                                            voiceId: block.voiceId || defaultVoiceId 
+                                                                        })
+                                                                    });
+                                                                    const data = await res.json();
+                                                                    if (data.audioUrl) {
+                                                                        const idx = updatedBlocks.findIndex(b => b.id === block.id);
+                                                                        updatedBlocks[idx] = { 
+                                                                            ...updatedBlocks[idx], 
+                                                                            audioUrl: data.audioUrl, 
+                                                                            filename: data.filename,
+                                                                            alignment: data.alignment
+                                                                        };
+                                                                        setVoiceoverBlocks([...updatedBlocks]); // Update progressively
+                                                                    }
+                                                                }
+                                                            } catch (err) {
+                                                                console.error('Batch synthesis failed:', err);
+                                                            } finally {
+                                                                setIsGeneratingAll(false);
+                                                            }
+                                                        }}
+                                                        disabled={isGeneratingAll || !defaultVoiceId || !voiceoverBlocks.some(b => !b.audioUrl && b.text.trim())}
+                                                        className="px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/30 text-emerald-500 text-[9px] font-black uppercase rounded-lg hover:bg-emerald-500 hover:text-white transition-all disabled:opacity-30 flex items-center gap-2 group"
+                                                    >
+                                                        {isGeneratingAll ? <div className="w-3 h-3 border-2 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin" /> : <svg className="w-3 h-3 transition-transform group-hover:scale-125" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>}
+                                                        Generate All
+                                                    </button>
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); setActiveSelectionBlockId(null); setIsVoiceModalOpen(true); }}
+                                                        className="px-3 py-1.5 bg-purple-500/10 border border-purple-500/30 text-purple-500 text-[9px] font-black uppercase rounded-lg hover:bg-purple-500 hover:text-white transition-all transition-colors flex items-center gap-2 group"
+                                                    >
+                                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+                                                        {voices.find(v => v.id === defaultVoiceId)?.name.split(' ')[0] || 'Vocal'}
+                                                    </button>
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); setIsMagicModalOpen(true); }}
+                                                        className="px-3 py-1.5 bg-amber-500/10 border border-amber-500/30 text-amber-500 text-[9px] font-black uppercase rounded-lg hover:bg-amber-500 hover:text-white transition-all transition-colors flex items-center gap-2 group"
+                                                    >
+                                                        <svg className="w-3 h-3 group-hover:rotate-12 transition-transform" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2z"/></svg>
+                                                        Magic Script
+                                                    </button>
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            let proposedStart = Math.max(0, currentTime - trimStart);
+                                                            const sorted = [...voiceoverBlocks].sort((a,b) => a.startTime - b.startTime);
+                                                            
+                                                            // Robust Gap Finding Sweep
+                                                            let overlapFound = true;
+                                                            while (overlapFound) {
+                                                                overlapFound = false;
+                                                                for (const b of sorted) {
+                                                                    const bEnd = b.startTime + (b.duration || 2);
+                                                                    // If proposed window overlaps this block
+                                                                    if (proposedStart < bEnd && (proposedStart + 2) > b.startTime) {
+                                                                        proposedStart = bEnd;
+                                                                        overlapFound = true;
+                                                                        break; // Start check again from new proposed start to handle sequential blocks
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            const newBlock = {
+                                                                id: `v_${Date.now()}`,
+                                                                text: '',
+                                                                startTime: proposedStart,
+                                                                duration: 2,
+                                                                voiceId: defaultVoiceId
+                                                            };
+                                                            setVoiceoverBlocks(prev => [...prev, newBlock]);
+                                                            setActiveBlockId(newBlock.id);
+                                                        }}
+                                                        className="px-3 py-1.5 bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[9px] font-black uppercase rounded-lg hover:bg-rose-500 hover:text-white transition-all transition-colors flex items-center gap-2 group"
+                                                    >
+                                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 4v16m8-8H4" /></svg>
+                                                        Script
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex-1 flex flex-col gap-4 overflow-y-auto pr-2 custom-scrollbar">
+                                                {voiceoverBlocks.length === 0 ? (
+                                                    <div className="flex-1 flex flex-col items-center justify-center text-center p-8 border border-dashed border-white/5 rounded-2xl opacity-40">
+                                                        <p className="text-[10px] uppercase font-bold text-neutral-500 tracking-widest leading-relaxed">
+                                                            No narrations yet.<br/>
+                                                            Add a block at the current time.
+                                                        </p>
+                                                    </div>
+                                                ) : (
+                                                    voiceoverBlocks.map((block) => (
+                                                        <div
+                                                            key={block.id}
+                                                            className={`p-4 rounded-xl border transition-all ${activeBlockId === block.id ? 'bg-white/[0.05] border-amber-500/50 shadow-lg shadow-amber-500/5' : block.audioUrl ? 'bg-emerald-500/5 border-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.05)]' : 'bg-white/[0.02] border-white/5 hover:border-white/10'}`}
+                                                            onClick={(e) => { e.stopPropagation(); setActiveBlockId(block.id); }}
+                                                        >
+                                                            <div className="flex items-center justify-between mb-3">
+                                                                <div className="flex items-center gap-3">
+                                                                    <div className="flex items-center gap-2">
+                                                                        <span className="text-[9px] font-mono text-neutral-500">@{block.startTime.toFixed(2)}s</span>
+                                                                        {block.audioUrl && <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" />}
+                                                                    </div>
+                                                                    <button 
+                                                                        onClick={(e) => { e.stopPropagation(); setActiveSelectionBlockId(block.id); setIsVoiceModalOpen(true); }}
+                                                                        className="flex items-center gap-1.5 px-2 py-0.5 bg-white/5 border border-white/5 hover:border-white/20 hover:bg-white/10 rounded transition-all group/vsel"
+                                                                    >
+                                                                        <svg className="w-2.5 h-2.5 text-neutral-500 group-hover/vsel:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+                                                                        <span className="text-[8px] font-black uppercase tracking-widest text-neutral-400 group-hover/vsel:text-white">
+                                                                            {voices.find(v => v.id === (block.voiceId || defaultVoiceId))?.name.split(' ')[0] || 'Vocal'}
+                                                                        </span>
+                                                                    </button>
+                                                                </div>
+                                                                <button
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        setVoiceoverBlocks(voiceoverBlocks.filter(b => b.id !== block.id));
+                                                                        if (activeBlockId === block.id) setActiveBlockId(null);
+                                                                    }}
+                                                                    className="text-neutral-600 hover:text-rose-500 transition-colors"
+                                                                >
+                                                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
+                                                                </button>
+                                                            </div>
+
+                                                            {activeBlockId === block.id ? (
+                                                                <div className="flex flex-col gap-3">
+                                                                    <textarea
+                                                                        value={block.text}
+                                                                        onChange={(e) => {
+                                                                            const text = e.target.value;
+                                                                            const words = text.split(/\s+/).filter(Boolean).length;
+                                                                            const estimatedDuration = Math.max(1, words / 2.5);
+                                                                            setVoiceoverBlocks(voiceoverBlocks.map(b => b.id === block.id ? { ...b, text, duration: estimatedDuration } : b));
+                                                                        }}
+                                                                        placeholder="Voiceover script..."
+                                                                        className="bg-black/40 border border-white/10 rounded-lg p-3 text-[11px] text-white outline-none resize-none h-20"
+                                                                    />
+                                                                    <button
+                                                                        onClick={async (e) => {
+                                                                            e.stopPropagation();
+                                                                            if (!block.text.trim() || isGeneratingVoice) return;
+                                                                            setIsGeneratingVoice(true);
+                                                                            try {
+                                                                                const res = await fetch('/api/synthesize', {
+                                                                                    method: 'POST',
+                                                                                    headers: { 'Content-Type': 'application/json' },
+                                                                                    body: JSON.stringify({ 
+                                                                                        text: block.text,
+                                                                                        voiceId: block.voiceId || defaultVoiceId
+                                                                                    })
+                                                                                });
+                                                                                const data = await res.json();
+                                                                                if (data.audioUrl) {
+                                                                                    // Probe audio for absolute duration
+                                                                                    const audio = new Audio(data.audioUrl);
+                                                                                    audio.onloadedmetadata = () => {
+                                                                                       setVoiceoverBlocks(blocks => blocks.map(b => b.id === block.id ? { 
+                                                                                            ...b, 
+                                                                                            audioUrl: data.audioUrl, 
+                                                                                            filename: data.filename,
+                                                                                            duration: audio.duration,
+                                                                                            alignment: data.alignment
+                                                                                        } : b));
+                                                                                    };
+                                                                                    // Auto-confirm and exit edit mode after successful synthesis
+                                                                                    setActiveBlockId(null);
+                                                                                }
+                                                                            } catch (err) {
+                                                                                console.error('Synthesis failed:', err);
+                                                                            } finally {
+                                                                                setIsGeneratingVoice(false);
+                                                                            }
+                                                                        }}
+                                                                        disabled={!block.text.trim() || isGeneratingVoice || !(block.voiceId || defaultVoiceId)}
+                                                                        className="w-full py-2 bg-white text-black text-[9px] font-black uppercase tracking-widest rounded-lg flex items-center justify-center gap-2"
+                                                                    >
+                                                                        {isGeneratingVoice ? <div className="w-3 h-3 border-2 border-black/20 border-t-black rounded-full animate-spin" /> : "Synthesize"}
+                                                                    </button>
+                                                                </div>
+                                                            ) : (
+                                                                <p className="text-[11px] text-neutral-400 line-clamp-2 italic">
+                                                                    {block.text || "No script added..."}
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                    ))
+                                                )}
+                                            </div>
+                                        </div>
                                     )}
                                 </div>
+
+                                {/* Timeline Layer for Audio Tracks (Centered Production Zone) - Toggleable */}
+                                {showVoiceEditor && (
+                                    <div className="h-16 mt-6 mx-4 bg-white/[0.02] border border-white/5 rounded-2xl relative flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
+                                        <div className="absolute inset-0 bg-amber-500/5 px-10 flex items-center pointer-events-none">
+                                            <span className="text-[8px] font-black uppercase text-amber-500 tracking-[0.2em] opacity-40">Voice Layer</span>
+                                        </div>
+
+                                        <div 
+                                            className="flex-1 relative mx-6 cursor-crosshair group/vtrack"
+                                            onMouseMove={(e) => {
+                                                if (activeHandle === 'voice-drag' && activeBlockId) {
+                                                    const rect = e.currentTarget.getBoundingClientRect();
+                                                    const x = e.clientX - rect.left;
+                                                    const trackWidth = rect.width;
+                                                    const percentage = Math.max(0, Math.min(1, x / trackWidth));
+                                                    const pointerTime = percentage * (trimEnd - trimStart);
+                                                    
+                                                    const activeBlock = voiceoverBlocks.find(b => b.id === activeBlockId);
+                                                    if (!activeBlock) return;
+
+                                                    const duration = activeBlock.duration || 1; 
+                                                    const otherBlocks = voiceoverBlocks.filter(b => b.id !== activeBlockId).sort((a,b) => a.startTime - b.startTime);
+
+                                                    // Proposed new start time accounting for where you grabbed it
+                                                    let proposedTime = pointerTime - grabOffset;
+
+                                                    // Dynamic Obstacle Detection based on proposed path
+                                                    const leftObstacles = otherBlocks.filter(b => (b.startTime + (b.duration || 1)) <= activeBlock.startTime);
+                                                    const rightObstacles = otherBlocks.filter(b => b.startTime >= (activeBlock.startTime + duration));
+
+                                                    const nearestLeft = leftObstacles.length > 0 ? leftObstacles[leftObstacles.length - 1] : null;
+                                                    const nearestRight = rightObstacles.length > 0 ? rightObstacles[0] : null;
+
+                                                    if (nearestLeft) {
+                                                        proposedTime = Math.max(proposedTime, nearestLeft.startTime + (nearestLeft.duration || 1));
+                                                    }
+                                                    if (nearestRight) {
+                                                        proposedTime = Math.min(proposedTime, nearestRight.startTime - duration);
+                                                    }
+
+                                                    // Hard Track Boundaries
+                                                    const maxPossibleTime = (trimEnd - trimStart) - duration;
+                                                    proposedTime = Math.max(0, Math.min(proposedTime, maxPossibleTime));
+
+                                                    setVoiceoverBlocks(blocks => blocks.map(b => b.id === activeBlockId ? { ...b, startTime: proposedTime } : b));
+                                                }
+                                            }}
+                                            onMouseUp={() => activeHandle === 'voice-drag' && setActiveHandle(null)}
+                                            onMouseLeave={() => activeHandle === 'voice-drag' && setActiveHandle(null)}
+                                        >
+                                            {/* Draggable Audio Blocks (Now Absolute to the mx-6 Track) */}
+                                            {voiceoverBlocks.map(block => (
+                                                <div
+                                                    key={block.id}
+                                                    onMouseDown={(e) => {
+                                                        e.stopPropagation();
+                                                        const rect = e.currentTarget.getBoundingClientRect();
+                                                        const clickPercentage = (e.clientX - rect.left) / rect.width;
+                                                        // Store how many seconds deep into the block we clicked
+                                                        const durationInBlock = (block.duration || 1) * clickPercentage;
+                                                        setGrabOffset(durationInBlock);
+                                                        
+                                                        setActiveBlockId(block.id);
+                                                        setActiveHandle('voice-drag');
+                                                    }}
+                                                    className={`absolute top-1/2 h-9 -translate-y-1/2 rounded-lg border-2 flex items-center justify-center cursor-move transition-shadow ${activeBlockId === block.id ? 'bg-amber-500 border-white shadow-[0_0_15px_rgba(245,158,11,0.6)] z-20' : 'bg-amber-500/20 border-amber-500/40 hover:bg-amber-500/40 hover:border-amber-500/60 z-10'}`}
+                                                    style={{
+                                                        left: `${(block.startTime / (trimEnd - trimStart || 1)) * 100}%`,
+                                                        width: `${((block.duration || 1) / (trimEnd - trimStart || 1)) * 100}%`,
+                                                        minWidth: '40px'
+                                                    }}
+                                                >
+                                                    <div className={`w-1.5 h-1.5 rounded-full mr-2 ${block.filename ? 'bg-white' : 'bg-white/40 animate-pulse'}`} />
+                                                    <div className="text-[8px] font-black text-amber-950 uppercase truncate max-w-[80px]">
+                                                        v_{block.id.slice(-4)}
+                                                    </div>
+                                                </div>
+                                            ))}
+
+                                            {/* Precision Matched Playhead */}
+                                            <div
+                                                className="absolute top-0 bottom-0 w-[1px] bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,1)] z-30 pointer-events-none"
+                                                style={{ left: `${((currentTime - trimStart) / (trimEnd - trimStart || 1)) * 100}%` }}
+                                            />
+                                        </div>
+                                    </div>
+                                )}
 
                                 <div className="h-40 flex flex-col justify-center gap-6 mt-4 px-4 overflow-visible">
                                     <div className="relative h-12 bg-white/5 rounded-full border border-white/10 flex items-center px-6 shadow-inner">
                                         <div className="absolute inset-x-6 h-1 bg-white/10 rounded-full" />
+                                        
+                                        {(() => {
+                                            const viewStart = isEditorActive ? trimStart : 0;
+                                            const viewEnd = isEditorActive ? trimEnd : (videoDuration || 100);
+                                            const viewRange = viewEnd - viewStart || 1;
 
-                                        {/* Slider Input Layer - Using pointer-events Pass-through trick */}
-                                        <div className="absolute inset-x-6 h-full flex items-center pointer-events-none">
-                                            <input
-                                                type="range"
-                                                min={0}
-                                                max={videoDuration || 100}
-                                                step={0.1}
-                                                value={trimStart}
-                                                onMouseDown={() => setActiveHandle('start')}
-                                                onTouchStart={() => setActiveHandle('start')}
-                                                onChange={(e) => onTrimStartChange(Number(e.target.value))}
-                                                className={`absolute w-full opacity-0 cursor-pointer h-full pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-moz-range-thumb]:pointer-events-auto ${activeHandle === 'start' ? 'z-40' : 'z-20'}`}
-                                            />
-                                            <input
-                                                type="range"
-                                                min={0}
-                                                max={videoDuration || 100}
-                                                step={0.1}
-                                                value={trimEnd}
-                                                onMouseDown={() => setActiveHandle('end')}
-                                                onTouchStart={() => setActiveHandle('end')}
-                                                onChange={(e) => onTrimEndChange(Number(e.target.value))}
-                                                className={`absolute w-full opacity-0 cursor-pointer h-full pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-moz-range-thumb]:pointer-events-auto ${activeHandle === 'end' ? 'z-40' : 'z-20'}`}
-                                            />
-                                            <input
-                                                type="range"
-                                                min={0}
-                                                max={videoDuration || 100}
-                                                step={0.1}
-                                                value={currentTime}
-                                                onMouseDown={() => setActiveHandle('playhead')}
-                                                onTouchStart={() => setActiveHandle('playhead')}
-                                                onChange={(e) => {
-                                                    const val = Number(e.target.value);
-                                                    setCurrentTime(val);
-                                                    if (videoRef.current) videoRef.current.currentTime = val;
-                                                }}
-                                                className="absolute w-full opacity-0 cursor-pointer h-full pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-moz-range-thumb]:pointer-events-auto z-[60]"
-                                            />
+                                            return (
+                                                <div className="absolute inset-x-6 h-full flex items-center pointer-events-none">
+                                                    <input
+                                                        type="range"
+                                                        min={0}
+                                                        max={videoDuration || 100}
+                                                        step={0.1}
+                                                        value={trimStart}
+                                                        onMouseDown={() => setActiveHandle('start')}
+                                                        onTouchStart={() => setActiveHandle('start')}
+                                                        onChange={(e) => onTrimStartChange(Number(e.target.value))}
+                                                        className={`absolute w-full opacity-0 cursor-pointer h-full pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-moz-range-thumb]:pointer-events-auto ${activeHandle === 'start' ? 'z-40' : 'z-20'}`}
+                                                    />
+                                                    <input
+                                                        type="range"
+                                                        min={0}
+                                                        max={videoDuration || 100}
+                                                        step={0.1}
+                                                        value={trimEnd}
+                                                        onMouseDown={() => setActiveHandle('end')}
+                                                        onTouchStart={() => setActiveHandle('end')}
+                                                        onChange={(e) => onTrimEndChange(Number(e.target.value))}
+                                                        className={`absolute w-full opacity-0 cursor-pointer h-full pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-moz-range-thumb]:pointer-events-auto ${activeHandle === 'end' ? 'z-40' : 'z-20'}`}
+                                                    />
+                                                    <input
+                                                        type="range"
+                                                        min={viewStart}
+                                                        max={viewEnd}
+                                                        step={0.1}
+                                                        value={currentTime}
+                                                        onMouseDown={() => setActiveHandle('playhead')}
+                                                        onTouchStart={() => setActiveHandle('playhead')}
+                                                        onChange={(e) => {
+                                                            const val = Number(e.target.value);
+                                                            setCurrentTime(val);
+                                                            if (videoRef.current) videoRef.current.currentTime = val;
+                                                        }}
+                                                        className="absolute w-full opacity-0 cursor-pointer h-full pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-moz-range-thumb]:pointer-events-auto z-[60]"
+                                                    />
 
-                                            {/* Visual Progress Layer */}
-                                            <div
-                                                className="absolute h-[2px] bg-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.5)] transition-all duration-75 pointer-events-none"
-                                                style={{
-                                                    left: `${(trimStart / (videoDuration || 100)) * 100}%`,
-                                                    width: `${((trimEnd - trimStart) / (videoDuration || 100)) * 100}%`
-                                                }}
-                                            />
+                                                    {/* Visual Progress Layer (Zoomed) */}
+                                                    <div
+                                                        className="absolute h-[2px] bg-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.5)] transition-all duration-75 pointer-events-none"
+                                                        style={{
+                                                            left: `${((trimStart - viewStart) / viewRange) * 100}%`,
+                                                            width: `${((trimEnd - trimStart) / viewRange) * 100}%`
+                                                        }}
+                                                    />
 
-                                            {/* Playhead Indicator (Green) */}
-                                            <div
-                                                className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-1 h-10 bg-emerald-500 shadow-[0_0_20px_rgba(16,185,129,1)] pointer-events-none z-50 rounded-full transition-all duration-75 ease-linear border border-white/20"
-                                                style={{ left: `${(currentTime / (videoDuration || 100)) * 100}%` }}
-                                            />
+                                                    {/* Playhead Indicator (Green - Zoomed) */}
+                                                    <div
+                                                        className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-1 h-10 bg-emerald-500 shadow-[0_0_20px_rgba(16,185,129,1)] pointer-events-none z-50 rounded-full transition-all duration-75 ease-linear border border-white/20"
+                                                        style={{ left: `${((currentTime - viewStart) / viewRange) * 100}%` }}
+                                                    />
 
-                                            {/* Handle Layer */}
-                                            <div className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full border-2 border-amber-500 shadow-xl pointer-events-none transition-transform duration-200 ${activeHandle === 'start' ? 'scale-125 z-40' : 'z-20'}`}
-                                                style={{ left: `${(trimStart / (videoDuration || 100)) * 100}%` }} />
-                                            <div className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full border-2 border-amber-500 shadow-xl pointer-events-none transition-transform duration-200 ${activeHandle === 'end' ? 'scale-125 z-40' : 'z-20'}`}
-                                                style={{ left: `${(trimEnd / (videoDuration || 100)) * 100}%` }} />
-                                        </div>
+                                                    {/* Handle Layer (Zoomed) */}
+                                                    <div className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full border-2 border-amber-500 shadow-xl pointer-events-none transition-transform duration-200 ${activeHandle === 'start' ? 'scale-125 z-40' : 'z-20'}`}
+                                                        style={{ left: `${((trimStart - viewStart) / viewRange) * 100}%` }} />
+                                                    <div className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full border-2 border-amber-500 shadow-xl pointer-events-none transition-transform duration-200 ${activeHandle === 'end' ? 'scale-125 z-40' : 'z-20'}`}
+                                                        style={{ left: `${((trimEnd - viewStart) / viewRange) * 100}%` }} />
+                                                </div>
+                                            );
+                                        })()}
                                     </div>
 
                                     <div className="flex items-center justify-between pointer-events-auto">
@@ -544,8 +1241,192 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                                                 onClick={handleApplyTrim}
                                                 className="px-10 py-2.5 bg-amber-500 text-black text-[10px] uppercase tracking-widest font-black rounded-lg hover:scale-105 active:scale-95 transition-all shadow-lg shadow-amber-500/20"
                                             >
-                                                Apply Professional Cut
+                                                {isTrimming ? 'Processing...' : 'Finalize'}
                                             </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : isFinalPreview ? (
+                            <div className="w-full h-full flex flex-col items-center justify-center p-8 bg-neutral-950 overflow-y-auto custom-scrollbar">
+                                <div className="max-w-4xl w-full flex flex-col gap-10 py-12">
+                                    <div className="flex items-center justify-between border-b border-white/5 pb-10">
+                                        <div className="flex flex-col gap-2">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-2 h-2 rounded-full bg-amber-500 shadow-[0_0_10px_rgba(245,158,11,1)] animate-pulse" />
+                                                <h2 className="text-4xl font-black text-white italic tracking-tighter">Final Production</h2>
+                                            </div>
+                                            <p className="text-[10px] text-neutral-500 font-bold uppercase tracking-[0.3em]">Mastering & Synthesis Complete</p>
+                                        </div>
+                                        <div className="flex gap-4">
+                                            <button 
+                                                onClick={() => {
+                                                    setIsFinalPreview(false);
+                                                    setIsEditorActive(true);
+                                                    onEditorToggle?.(true);
+                                                }}
+                                                className="px-6 py-3 bg-neutral-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-neutral-800 transition-all border border-white/10 flex items-center gap-2 group"
+                                            >
+                                                <svg className="w-3.5 h-3.5 transition-transform group-hover:-translate-x-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M11 15l-3-3m0 0l3-3m-3 3h8M3 12a9 9 0 1118 0 8.959 8.959 0 01-9 9 9 9 0 01-9-9z"/></svg>
+                                                Modify Clip
+                                            </button>
+                                            <a 
+                                                href={clipUrl || '#'} 
+                                                download={`production_${Date.now()}.mp4`}
+                                                className="px-8 py-3 bg-white text-black rounded-xl text-[10px] font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-2xl shadow-white/20 flex items-center gap-3 group"
+                                            >
+                                                <svg className="w-4 h-4 transition-transform group-hover:translate-y-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                                                Export Production
+                                            </a>
+                                        </div>
+                                    </div>
+
+                                    <div className="aspect-video bg-black rounded-[2.5rem] overflow-hidden shadow-[0_40px_100px_rgba(0,0,0,0.8)] border border-white/10 relative group ring-1 ring-white/5">
+                                        {clipUrl ? (
+                                            <div className="w-full h-full relative cursor-pointer" onClick={handlePlayPause}>
+                                                <video
+                                                    ref={videoRef}
+                                                    src={clipUrl}
+                                                    className="w-full h-full object-contain"
+                                                    onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+                                                    onPlay={() => setIsPlaying(true)}
+                                                    onPause={() => setIsPlaying(false)}
+                                                    autoPlay
+                                                    loop
+                                                />
+                                                
+                                                {/* Dynamic Captions Overlay (Reused) */}
+                                                {showCaptions && (
+                                                    <div className={`absolute inset-0 flex items-center justify-center pointer-events-none px-12 z-20 ${
+                                                        captionStyles.position === 'top' ? 'items-start pt-20' : 
+                                                        captionStyles.position === 'center' ? 'items-center' : 
+                                                        captionStyles.position === 'bottom-flush' ? 'items-end pb-8' :
+                                                        'items-end pb-24'
+                                                    }`}>
+                                                        {voiceoverBlocks
+                                                            .filter(b => b.text.trim())
+                                                            .map(block => {
+                                                                const activeVideoTime = isPlaying ? preciseTime : currentTime;
+                                                                const clipTime = activeVideoTime;
+                                                                const offsetInBlock = clipTime - block.startTime;
+                                                                const words = block.text.split(' ');
+                                                                
+                                                                if (clipTime >= block.startTime && clipTime <= (block.startTime + (block.duration || 4))) {
+                                                                    return (
+                                                                        <div key={block.id} className={`text-center animate-in zoom-in-95 fade-in duration-300 ${
+                                                                            captionStyles.width === 'full' ? 'w-full' : captionStyles.width === 'wide' ? 'max-w-4xl' : 'max-w-2xl'
+                                                                        } ${
+                                                                            captionStyles.position === 'top' ? 'slide-in-from-top-2' : 
+                                                                            captionStyles.position === 'bottom' ? 'slide-in-from-bottom-2' : ''
+                                                                        }`}>
+                                                                            <div className={`rounded-2xl transition-all shadow-2xl ${
+                                                                                captionStyles.padding === 'compact' ? 'px-6 py-2' : 
+                                                                                captionStyles.padding === 'relaxed' ? 'px-12 py-8' : 'px-8 py-4'
+                                                                            } ${
+                                                                                captionStyles.theme === 'glass' ? 'bg-black/70 backdrop-blur-3xl border border-white/10' : 
+                                                                                captionStyles.theme === 'solid' ? 'bg-black border border-white/20' : 
+                                                                                captionStyles.theme === 'minimal' ? 'bg-black/40 border border-white/5' :
+                                                                                'bg-transparent shadow-none border-none'
+                                                                            }`}>
+                                                                                <p className={`font-black text-white leading-tight tracking-tight drop-shadow-lg transition-all ${
+                                                                                    captionStyles.size === 'xs' ? 'text-[11px] sm:text-xs tracking-widest uppercase' :
+                                                                                    captionStyles.size === 'small' ? 'text-lg' : 
+                                                                                    captionStyles.size === 'large' ? 'text-3xl' : 
+                                                                                    'text-xl sm:text-2xl'
+                                                                                }`}>
+                                                                                    {captionStyles.highlight ? (
+                                                                                        (() => {
+                                                                                            const activeRefColor = captionStyles.color === 'amber' ? 'text-amber-500' : captionStyles.color === 'rose' ? 'text-rose-500' : captionStyles.color === 'cyan' ? 'text-cyan-400' : 'text-white underline';
+                                                                                            const activeGlow = captionStyles.color === 'amber' ? 'rgba(245,158,11,0.5)' : captionStyles.color === 'rose' ? 'rgba(244,63,94,0.5)' : captionStyles.color === 'cyan' ? 'rgba(34,211,238,0.5)' : 'rgba(255,255,255,0.5)';
+                                                                                            const activeVideoTime = isPlaying ? preciseTime : currentTime;
+                                                                                            const clipTime = activeVideoTime;
+                                                                                            const offsetInBlock = clipTime - block.startTime;
+                                                                                            const words = block.text.split(' ');
+                                                                                            
+                                                                                            if (block.alignment && block.alignment.characters) {
+                                                                                                const starts = block.alignment.character_start_times_seconds;
+                                                                                                let activeCharIdx = -1;
+                                                                                                for (let i = 0; i < starts.length; i++) {
+                                                                                                    if (offsetInBlock >= starts[i]) activeCharIdx = i; else break;
+                                                                                                }
+                                                                                                let charTraversed = 0;
+                                                                                                let activeWordIdx = -1;
+                                                                                                words.forEach((word: string, wIdx: number) => {
+                                                                                                    const wordRangeStart = charTraversed;
+                                                                                                    const wordRangeEnd = charTraversed + word.length;
+                                                                                                    if (activeCharIdx >= wordRangeStart && activeCharIdx < wordRangeEnd) activeWordIdx = wIdx;
+                                                                                                    charTraversed += word.length + 1;
+                                                                                                });
+                                                                                                return words.map((word: string, i: number) => (
+                                                                                                    <span key={i} className={`transition-all duration-300 ${i === activeWordIdx ? `${activeRefColor} scale-110 drop-shadow-[0_0_10px_${activeGlow}]` : 'opacity-30'}`}>
+                                                                                                        {word}{' '}
+                                                                                                    </span>
+                                                                                                ));
+                                                                                            }
+                                                                                            const timePerWord = (block.duration || 4) / words.length;
+                                                                                            const activeIndex = Math.floor(offsetInBlock / timePerWord);
+                                                                                            return words.map((word: string, i: number) => (
+                                                                                                <span key={i} className={`transition-all duration-300 ${i === activeIndex ? activeRefColor : 'opacity-30'}`}>
+                                                                                                    {word}{' '}
+                                                                                                </span>
+                                                                                            ));
+                                                                                        })()
+                                                                                    ) : block.text}
+                                                                                </p>
+                                                                            </div>
+                                                                        </div>
+                                                                    );
+                                                                }
+                                                                return null;
+                                                            })}
+                                                    </div>
+                                                )}
+
+                                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-30">
+                                                    <div className="w-20 h-20 bg-white/10 backdrop-blur-3xl rounded-full flex items-center justify-center border border-white/20 shadow-2xl">
+                                                        {isPlaying ? (
+                                                            <svg className="w-8 h-8 text-white fill-current" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                                                        ) : (
+                                                            <svg className="w-8 h-8 text-white fill-current translate-x-1" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="w-full h-full flex flex-col items-center justify-center gap-4 text-neutral-500">
+                                                <div className="w-12 h-12 border-4 border-white/10 border-t-amber-500 rounded-full animate-spin" />
+                                                <p className="text-[10px] font-black uppercase tracking-widest">Mastering Production</p>
+                                            </div>
+                                        )}
+                                    </div>
+                                    
+                                    <div className="grid grid-cols-3 gap-6">
+                                        <div className="p-6 bg-white/[0.03] border border-white/5 rounded-3xl">
+                                            <span className="text-[9px] font-black uppercase tracking-widest text-neutral-600 block mb-2">Vocal Clarity</span>
+                                            <div className="flex items-center gap-2">
+                                                <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                                                    <div className="h-full w-[95%] bg-emerald-500" />
+                                                </div>
+                                                <span className="text-[10px] font-mono text-emerald-500">95%</span>
+                                            </div>
+                                        </div>
+                                        <div className="p-6 bg-white/[0.03] border border-white/5 rounded-3xl">
+                                            <span className="text-[9px] font-black uppercase tracking-widest text-neutral-600 block mb-2">Visual Fidelity</span>
+                                            <div className="flex items-center gap-2">
+                                                <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                                                    <div className="h-full w-[100%] bg-amber-500" />
+                                                </div>
+                                                <span className="text-[10px] font-mono text-amber-500">4K</span>
+                                            </div>
+                                        </div>
+                                        <div className="p-6 bg-white/[0.03] border border-white/5 rounded-3xl">
+                                            <span className="text-[9px] font-black uppercase tracking-widest text-neutral-600 block mb-2">Temporal Alignment</span>
+                                            <div className="flex items-center gap-2">
+                                                <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                                                    <div className="h-full w-[98%] bg-rose-500" />
+                                                </div>
+                                                <span className="text-[10px] font-mono text-rose-500">98%</span>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -565,6 +1446,22 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                                     className="w-full h-full object-contain shadow-2xl"
                                     onClick={handlePlayPause}
                                 />
+                                
+                                {/* Persistent Post-Production Voice Layer (Below Video) */}
+                                {voiceoverBlocks.length > 0 && (
+                                    <div className="w-full h-2 bg-black border-t border-white/5 relative overflow-hidden flex-shrink-0 group/mini-voice">
+                                        <div className="absolute inset-x-0 bottom-0 top-0 bg-amber-500/[0.03]" />
+                                        <div className="absolute inset-0 px-0">
+                                            {voiceoverBlocks.map(block => (
+                                                <div 
+                                                    key={block.id}
+                                                    className={`absolute top-0 bottom-0 w-2.5 bg-amber-500 rounded-sm shadow-[0_0_5px_rgba(245,158,11,1)] transition-all ${block.filename ? 'opacity-100' : 'opacity-30 ripple-pulse'}`}
+                                                    style={{ left: `${(block.startTime / (trimEnd - trimStart || 1)) * 100}%` }}
+                                                />
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
 
                                 {showFullVideo && (
                                     <>
@@ -651,34 +1548,261 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                                                         </div>
                                                     </div>
 
-                                                    {/* Pro Badge */}
-                                                    <div className="flex items-center gap-2 px-3 py-1 bg-rose-500/10 border border-rose-500/20 rounded-lg">
-                                                        <div className="w-1 h-1 rounded-full bg-rose-500 animate-pulse" />
-                                                        <span className="text-[10px] font-black uppercase tracking-widest text-rose-500">Live Preview</span>
                                                     </div>
                                                 </div>
                                             </div>
+                                        </>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            {/* MAGIC SCRIPT MODAL */}
+            {isMagicModalOpen && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 sm:p-24 bg-black/60 backdrop-blur-3xl animate-in fade-in duration-500">
+                    <div className="w-full max-w-xl bg-neutral-900/40 border border-white/10 rounded-[2.5rem] p-10 shadow-2xl relative overflow-hidden group">
+                        {/* Background Energy Glow */}
+                        <div className="absolute -top-24 -right-24 w-60 h-60 bg-amber-500/20 rounded-full blur-[80px] group-hover:bg-amber-500/30 transition-all duration-700" />
+                        <div className="absolute -bottom-24 -left-24 w-60 h-60 bg-rose-500/10 rounded-full blur-[80px] group-hover:bg-rose-500/20 transition-all duration-700" />
+
+                        {!isMagicLoading ? (
+                            <div className="relative z-10 flex flex-col gap-8">
+                                <div className="flex flex-col gap-2">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-500">
+                                            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2z"/></svg>
                                         </div>
-                                    </>
-                                )}
+                                        <div>
+                                            <h2 className="text-xl font-black text-white tracking-tight">Magic Script Engine</h2>
+                                            <p className="text-[10px] text-neutral-500 uppercase tracking-[0.2em] font-bold">Multimodal Narrator Architecture</p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="flex flex-col gap-4">
+                                    <label className="text-[9px] font-black uppercase tracking-[0.2em] text-neutral-400">Describe the Narration Style</label>
+                                    <textarea
+                                        value={magicPrompt}
+                                        onChange={(e) => setMagicPrompt(e.target.value)}
+                                        placeholder="E.g., 'A dramatic documentary style focusing on the city lights' or 'Informative and upbeat tech review'..."
+                                        className="w-full h-32 bg-black/40 border border-white/5 rounded-2xl p-6 text-sm text-white placeholder:text-neutral-700 outline-none focus:border-amber-500/30 transition-all resize-none shadow-inner"
+                                    />
+                                </div>
+
+                                <div className="flex gap-4">
+                                    <button
+                                        onClick={() => setIsMagicModalOpen(false)}
+                                        className="flex-1 py-4 bg-white/5 border border-white/10 rounded-2xl text-[10px] font-black uppercase tracking-widest text-neutral-400 hover:bg-white/10 hover:text-white transition-all shadow-xl"
+                                    >
+                                        Abort Mission
+                                    </button>
+                                            <button
+                                                onClick={async () => {
+                                                    if (!magicPrompt.trim()) return;
+                                                    setIsMagicLoading(true);
+                                                    setMagicProgress(0);
+                                                    setMagicStatus("Initializing Neural Link");
+                                                    try {
+                                                        const response = await fetch('/api/magic-script', {
+                                                            method: 'POST',
+                                                            headers: { 'Content-Type': 'application/json' },
+                                                            body: JSON.stringify({
+                                                                videoUrl: activeVideoUrl,
+                                                                trimStart,
+                                                                trimEnd,
+                                                                prompt: magicPrompt
+                                                            })
+                                                        });
+
+                                                        const reader = response.body?.getReader();
+                                                        const decoder = new TextDecoder();
+
+                                                        while (reader) {
+                                                            const { value, done } = await reader.read();
+                                                            if (done) break;
+
+                                                            const chunk = decoder.decode(value);
+                                                            const lines = chunk.split('\n');
+
+                                                            for (const line of lines) {
+                                                                if (line.startsWith('data: ')) {
+                                                                    try {
+                                                                        const data = JSON.parse(line.slice(6));
+                                                                        if (data.step) setMagicStatus(data.step);
+                                                                        if (data.progress) setMagicProgress(data.progress);
+                                                                        if (data.blocks) {
+                                                                            const newBlocks = data.blocks.map((b: any) => ({
+                                                                                ...b,
+                                                                                id: `v_${Math.random().toString(36).substr(2, 9)}`,
+                                                                            }));
+                                                                            setVoiceoverBlocks(prev => [...prev, ...newBlocks]);
+                                                                            setIsMagicModalOpen(false);
+                                                                            setMagicPrompt("");
+                                                                        }
+                                                                        if (data.error) throw new Error(data.error);
+                                                                    } catch (e) {
+                                                                        console.error("Parse error:", e);
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    } catch (err) {
+                                                        console.error('Magic script generation failed:', err);
+                                                    } finally {
+                                                        setIsMagicLoading(false);
+                                                    }
+                                                }}
+                                                disabled={!magicPrompt.trim()}
+                                                className="flex-[2] py-4 bg-amber-500 text-black rounded-2xl text-[10px] font-black uppercase tracking-widest hover:scale-[1.02] active:scale-[0.98] transition-all shadow-2xl shadow-amber-500/20 disabled:opacity-30 disabled:grayscale disabled:hover:scale-100"
+                                            >
+                                                Execute Synthesis
+                                            </button>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="relative z-10 py-10 flex flex-col items-center justify-center text-center gap-8 animate-in fade-in duration-500">
+                                <div className="relative">
+                                    <div className="w-24 h-24 border-[3px] border-amber-500/10 border-t-amber-500 rounded-full animate-[spin_1.5s_linear_infinite]" />
+                                    <div className="absolute inset-0 flex items-center justify-center">
+                                        <svg className="w-8 h-8 text-amber-500 animate-pulse" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2z"/></svg>
+                                    </div>
+                                </div>
+                                <div className="flex flex-col gap-3">
+                                    <h3 className="text-xl font-black text-white italic tracking-tight">{magicStatus}</h3>
+                                    <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.3em] text-neutral-500">
+                                        <span className={magicProgress < 30 ? 'animate-pulse text-amber-500' : 'text-neutral-700'}>Extraction</span>
+                                        <span className="w-1 h-1 rounded-full bg-neutral-800" />
+                                        <span className={magicProgress >= 30 && magicProgress < 60 ? 'animate-pulse text-amber-500' : 'text-neutral-700'}>Transcription</span>
+                                        <span className="w-1 h-1 rounded-full bg-neutral-800" />
+                                        <span className={magicProgress >= 60 && magicProgress < 90 ? 'animate-pulse text-amber-500' : 'text-neutral-700'}>Analysis</span>
+                                        <span className="w-1 h-1 rounded-full bg-neutral-800" />
+                                        <span className={magicProgress >= 90 ? 'animate-pulse text-amber-500' : 'text-neutral-700'}>Synthesis</span>
+                                    </div>
+                                </div>
+                                <div className="w-full max-w-xs h-1.5 bg-white/5 rounded-full overflow-hidden border border-white/5">
+                                    <div 
+                                        className="h-full bg-gradient-to-r from-amber-500 via-rose-500 to-amber-500 transition-all duration-700 ease-out shadow-[0_0_15px_rgba(245,158,11,0.3)]" 
+                                        style={{ width: `${magicProgress}%` }}
+                                    />
+                                </div>
+                                <p className="text-[10px] text-neutral-600 font-bold uppercase tracking-widest max-w-[200px] leading-relaxed">
+                                    Our AI is currently examining every frame and phoneme to craft the perfect narration.
+                                </p>
                             </div>
                         )}
                     </div>
-                )}
+                </div>
+            )}
 
-                {/* Floating Download Button */}
-                {((showFullVideo && (fullVideoUrl || !isYoutube)) || (!showFullVideo && clipUrl)) && !isLoading && !isDownloadingFull && !isEditorActive && (
-                    <button
-                        onClick={handleDownload}
-                        className="absolute bottom-8 right-8 w-14 h-14 bg-white text-black rounded-xl flex items-center justify-center shadow-[0_10px_40px_rgba(255,255,255,0.3)] hover:scale-110 active:scale-95 transition-all group z-30"
-                        title={showFullVideo ? "Download Full Video" : "Download Segment"}
-                    >
-                        <svg className="w-6 h-6 group-hover:translate-y-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                        </svg>
-                    </button>
-                )}
-            </div>
+            {/* VOICE SELECTOR MODAL */}
+            {isVoiceModalOpen && (
+                <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 sm:p-24 bg-black/80 backdrop-blur-3xl animate-in fade-in duration-500">
+                    <div className="w-full max-w-4xl bg-neutral-900/60 border border-white/10 rounded-[3rem] p-12 shadow-2xl relative overflow-hidden flex flex-col gap-10">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <h2 className="text-2xl font-black text-white tracking-tight">Vocal Library</h2>
+                                <p className="text-[10px] text-neutral-500 uppercase tracking-[0.2em] font-bold">ElevenLabs Intelligence Catalog</p>
+                            </div>
+                            <button onClick={() => setIsVoiceModalOpen(false)} className="w-12 h-12 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-neutral-500 hover:text-white transition-all hover:rotate-90">
+                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                            </button>
+                        </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-6 overflow-y-auto max-h-[60vh] pr-4 custom-scrollbar">
+                            {voices.map(voice => (
+                                <div 
+                                    key={voice.id}
+                                    onClick={() => {
+                                        if (activeSelectionBlockId) {
+                                            setVoiceoverBlocks(prev => prev.map(b => b.id === activeSelectionBlockId ? { ...b, voiceId: voice.id, audioUrl: undefined } : b));
+                                        } else {
+                                            setDefaultVoiceId(voice.id);
+                                        }
+                                        setIsVoiceModalOpen(false);
+                                    }}
+                                    className={`group cursor-pointer p-6 rounded-3xl border transition-all relative ${
+                                        (activeSelectionBlockId ? voiceoverBlocks.find(b => b.id === activeSelectionBlockId)?.voiceId === voice.id : defaultVoiceId === voice.id)
+                                        ? 'bg-purple-500/20 border-purple-500 shadow-2xl shadow-purple-500/20' 
+                                        : 'bg-white/5 border-white/5 hover:border-white/20 hover:bg-white/[0.08]'
+                                    }`}
+                                >
+                                    <div className="flex flex-col gap-4">
+                                        <div className="flex items-center justify-between">
+                                            <div className="w-8 h-8 rounded-xl bg-purple-500/20 flex items-center justify-center text-purple-500">
+                                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+                                            </div>
+                                            {voice.previewUrl && (
+                                                <button 
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        
+                                                        // Stop previous
+                                                        if (previewAudioRef.current) {
+                                                            previewAudioRef.current.pause();
+                                                            if (playingVoiceId === voice.id) {
+                                                                setPlayingVoiceId(null);
+                                                                return;
+                                                            }
+                                                        }
+
+                                                        const audio = new Audio(voice.previewUrl);
+                                                        previewAudioRef.current = audio;
+                                                        setPlayingVoiceId(voice.id);
+                                                        
+                                                        audio.play().catch(e => console.warn('Preview blocked:', e));
+                                                        audio.onended = () => setPlayingVoiceId(null);
+                                                    }}
+                                                    className={`w-8 h-8 rounded-xl transition-all flex items-center justify-center ${playingVoiceId === voice.id ? 'bg-purple-500 text-white' : 'bg-white/5 opacity-0 group-hover:opacity-100 text-neutral-400 hover:text-white'}`}
+                                                >
+                                                    {playingVoiceId === voice.id ? (
+                                                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg>
+                                                    ) : (
+                                                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                                                    )}
+                                                </button>
+                                            )}
+                                        </div>
+                                        <div>
+                                            <h3 className="text-sm font-black text-white">{voice.name}</h3>
+                                            <p className="text-[9px] text-neutral-500 uppercase tracking-widest font-bold mt-1">{voice.category}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
+}
+
+function SyncAudioPreview({ isPlaying, currentTime, trimStart, blocks }: any) {
+    const playedBlocks = useRef<Set<string>>(new Set());
+
+    useEffect(() => {
+        if (!isPlaying) {
+            playedBlocks.current.clear();
+            return;
+        }
+
+        const clipTime = currentTime - trimStart;
+        blocks.forEach((block: any) => {
+            if (block.audioUrl && !playedBlocks.current.has(block.id)) {
+                // Check if current clip time is past the start point by a small margin
+                if (clipTime >= block.startTime && clipTime <= block.startTime + 0.3) {
+                    const audio = new Audio(block.audioUrl);
+                    audio.play().catch(e => console.warn('Audio play blocked:', e));
+                    playedBlocks.current.add(block.id);
+                }
+            }
+            // If we've moved back before the block, let it play again next time
+            if (clipTime < block.startTime - 0.5) {
+                playedBlocks.current.delete(block.id);
+            }
+        });
+    }, [currentTime, isPlaying, trimStart, blocks]);
+
+    return null;
 }

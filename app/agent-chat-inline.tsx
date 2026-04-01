@@ -9,6 +9,7 @@ interface Message {
     role: 'user' | 'agent';
     content: string;
     timestamps?: Array<{ start: string; end: string; videoUrl?: string }>;
+    rawContext?: string;
 }
 
 export interface AgentChatHandle {
@@ -17,14 +18,22 @@ export interface AgentChatHandle {
 
 interface AgentChatInlineProps {
     onTimestampClick?: (timestamp: { start: string; end: string; videoUrl?: string }) => void;
+    videoUrl?: string;
+    onDebugClick?: (content: string) => void;
 }
 
-const AgentChatInline = forwardRef<AgentChatHandle, AgentChatInlineProps>(({ onTimestampClick }, ref) => {
+const AgentChatInline = forwardRef<AgentChatHandle, AgentChatInlineProps>(({ onTimestampClick, videoUrl: propVideoUrl, onDebugClick }, ref) => {
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [conversationId, setConversationId] = useState<string | undefined>(undefined);
+    const [userId, setUserId] = useState<string>('global');
     const messagesEndRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const id = localStorage.getItem('clipper_user_id');
+        if (id) setUserId(id);
+    }, []);
 
     useImperativeHandle(ref, () => ({
         clearMessages: () => {
@@ -111,14 +120,29 @@ const AgentChatInline = forwardRef<AgentChatHandle, AgentChatInlineProps>(({ onT
         setIsLoading(true);
 
         try {
-            const response = await chatWithAgent(userMsg.content, conversationId);
-            if (response) {
-                setMessages(prev => [...prev, {
+            const history = messages.map(m => ({
+                role: m.role === 'agent' ? 'assistant' : 'user',
+                content: m.content
+            }));
+            const response = await chatWithAgent(
+                userMsg.content, 
+                conversationId, 
+                userId, 
+                propVideoUrl
+            );
+            
+            console.log('[AgentChat] Server Response:', response);
+
+            if (response && !('error' in response)) {
+                // Return structure includes { reply, timestamps, rawContext }
+                const agentMsg: Message = {
                     id: (Date.now() + 1).toString(),
                     role: 'agent',
-                    content: response.reply,
-                    timestamps: parseTimestamps(response.reply)
-                }]);
+                    content: response.reply || '',
+                    timestamps: parseTimestamps(response.reply || ''),
+                    rawContext: (response as any).rawContext || "No underlying context was provided to the AI for this specific query."
+                };
+                setMessages(prev => [...prev, agentMsg]);
                 setConversationId(response.conversation_id);
             }
         } catch (error) {
@@ -126,6 +150,12 @@ const AgentChatInline = forwardRef<AgentChatHandle, AgentChatInlineProps>(({ onT
         } finally {
             setIsLoading(false);
         }
+    };
+
+    const formatTimestamp = (ts: string) => {
+        if (!ts) return "";
+        const base = ts.split(/[.,]/)[0]; // Remove milliseconds
+        return base.startsWith('00:') ? base.substring(3) : base;
     };
 
     const calculateDuration = (start: string, end: string) => {
@@ -151,13 +181,25 @@ const AgentChatInline = forwardRef<AgentChatHandle, AgentChatInlineProps>(({ onT
                 )}
                 {messages.map((msg) => (
                     <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start animate-fade-in'}`}>
-                        <div className={`max-w-[85%] px-4 py-3 rounded-2xl text-sm leading-relaxed ${msg.role === 'user'
+                        <div className={`max-w-[85%] px-4 py-3 rounded-2xl text-sm leading-relaxed relative group/msg ${msg.role === 'user'
                             ? 'bg-white text-black font-medium'
                             : 'bg-white/5 border border-white/10 text-neutral-200'
                             }`}>
                             {msg.role === 'agent' ? (
-                                <div className="prose">
+                                <div className="prose min-h-[40px] pr-8 relative">
                                     <ReactMarkdown>{msg.content}</ReactMarkdown>
+                                    
+                                    {msg.rawContext && (
+                                        <button 
+                                            onClick={() => onDebugClick?.(msg.rawContext || "")}
+                                            className="absolute top-1 -right-1 p-2 rounded-lg bg-white/5 text-neutral-500 hover:text-rose-400 hover:bg-white/10 transition-all z-20 group-hover/msg:bg-rose-500 group-hover/msg:text-white"
+                                            title="Inspect Semantic Bridge"
+                                        >
+                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                            </svg>
+                                        </button>
+                                    )}
                                 </div>
                             ) : (
                                 msg.content
@@ -178,7 +220,7 @@ const AgentChatInline = forwardRef<AgentChatHandle, AgentChatInlineProps>(({ onT
                                                 </svg>
                                             </div>
                                             <div className="flex flex-col items-start leading-none gap-1">
-                                                <span className="tabular-nums font-mono tracking-tight opacity-90 group-hover/pill:opacity-100">{ts.start.split(',')[0]} - {ts.end.split(',')[0]}</span>
+                                                <span className="tabular-nums font-mono tracking-tight opacity-90 group-hover/pill:opacity-100">{formatTimestamp(ts.start)} - {formatTimestamp(ts.end)}</span>
                                             </div>
                                             <span className="px-1.5 py-0.5 rounded-md bg-white/5 group-hover/pill:bg-black/5 text-[8px] opacity-60 transition-colors">
                                                 {calculateDuration(ts.start, ts.end)}s

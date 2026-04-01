@@ -15,10 +15,11 @@ interface ProcessingModalProps {
     isOpen: boolean;
     videoUrl: string;
     engine: 'openai' | 'elevenlabs';
+    userId?: string;
     onClose: () => void;
 }
 
-export default function ProcessingModal({ isOpen, videoUrl, engine, onClose }: ProcessingModalProps) {
+export default function ProcessingModal({ isOpen, videoUrl, engine, userId = 'global', onClose }: ProcessingModalProps) {
     const router = useRouter();
     const [status, setStatus] = useState<ProcessingStatus>({
         stage: 'downloading',
@@ -47,7 +48,7 @@ export default function ProcessingModal({ isOpen, videoUrl, engine, onClose }: P
             const response = await fetch('/api/process-video', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ videoUrl, apiKey, engine })
+                body: JSON.stringify({ videoUrl, apiKey, engine, userId })
             });
 
             if (!response.ok) {
@@ -86,7 +87,8 @@ export default function ProcessingModal({ isOpen, videoUrl, engine, onClose }: P
                     clearInterval(interval);
                     if (statusData.complete && statusData.stage === 'complete') {
                         setTimeout(() => {
-                            router.push('/transcripts');
+                            // Include userId in redirect so the page loads the correct user data
+                            router.push(`/transcripts?url=${encodeURIComponent(videoUrl)}&userId=${encodeURIComponent(userId)}`);
                             onClose();
                         }, 1500);
                     }
@@ -130,7 +132,7 @@ export default function ProcessingModal({ isOpen, videoUrl, engine, onClose }: P
                         {status.stage === 'error' ? 'Something went wrong' : status.complete ? 'Successfully Ingested' : 'Intelligent Processing'}
                     </h2>
 
-                    <p className="text-neutral-500 text-sm font-medium uppercase tracking-[0.2em] mb-10">
+                    <p className="text-white/40 text-xs font-medium uppercase tracking-[0.2em] mb-10">
                         {status.message}
                     </p>
 

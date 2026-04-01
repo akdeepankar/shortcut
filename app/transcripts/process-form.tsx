@@ -1,9 +1,21 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+
 export default function ProcessForm() {
     const [url, setUrl] = useState('');
     const [engine, setEngine] = useState<'openai' | 'elevenlabs'>('openai');
+    const [userId, setUserId] = useState<string>('global');
+
+    useEffect(() => {
+        // Initialize or retrieve unique user ID for multi-user isolation
+        let storedId = localStorage.getItem('clipper_user_id');
+        if (!storedId) {
+            storedId = `user_${Math.random().toString(36).substring(2, 15)}`;
+            localStorage.setItem('clipper_user_id', storedId);
+        }
+        setUserId(storedId);
+    }, []);
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -18,7 +30,7 @@ export default function ProcessForm() {
 
         // Dispatch global event for the main workspace to handle processing
         window.dispatchEvent(new CustomEvent('app:process-video', {
-            detail: { url: url.trim(), engine }
+            detail: { url: url.trim(), engine, userId }
         }));
 
         setUrl(''); // Clear input
