@@ -45,7 +45,7 @@ interface TranscriptViewProps {
     transcripts: SearchResult[];
     initialQuery?: string;
     initialAgentResponse?: string | null;
-    onTimestampClick?: (timestamp: { start: string; end: string; videoUrl?: string }) => void;
+    onTimestampClick?: (timestamp: { start: string; end: string; videoUrl?: string; segments?: { start: string; end: string }[] }) => void;
     isMinimized?: boolean;
     onToggleMinimize?: () => void;
     videoUrl?: string; // Add this
@@ -65,7 +65,38 @@ export default function TranscriptView({ transcripts, initialQuery, initialAgent
     const [debugContext, setDebugContext] = useState<string | null>(null);
     const [refreshKey, setRefreshKey] = useState(0);
     const [isRefreshing, setIsRefreshing] = useState(false);
+    const [selectedClips, setSelectedClips] = useState<Map<string, { start: string, end: string, videoUrl: string }>>(new Map());
     const router = useRouter();
+
+    const toggleSelection = (e: React.MouseEvent, id: string, start: string, end: string, videoUrl: string) => {
+        e.stopPropagation();
+        const newSelection = new Map(selectedClips);
+        if (newSelection.has(id)) {
+            newSelection.delete(id);
+        } else {
+            newSelection.set(id, { start: start || '', end: end || '', videoUrl });
+        }
+        setSelectedClips(newSelection);
+    };
+
+    const handleJoinSelected = () => {
+        if (selectedClips.size === 0) return;
+        const clips = Array.from(selectedClips.values()).sort((a, b) => {
+            return a.start.localeCompare(b.start);
+        });
+
+        const first = clips[0];
+        const last = clips[clips.length - 1];
+
+        onTimestampClick?.({
+            start: first.start,
+            end: last.end,
+            videoUrl: first.videoUrl,
+            segments: clips.map(c => ({ start: c.start, end: c.end }))
+        });
+        
+        setSelectedClips(new Map());
+    };
 
     const agentChatRef = useRef<AgentChatHandle>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -186,6 +217,7 @@ export default function TranscriptView({ transcripts, initialQuery, initialAgent
             // 3. Clear Local State
             setVisualResults([]);
             setIndexes([]);
+            setSelectedClips(new Map());
 
             // 4. Force refresh the page data (since transcripts come from server)
             const { useRouter } = require('next/navigation');
@@ -447,17 +479,31 @@ export default function TranscriptView({ transcripts, initialQuery, initialAgent
 
                     <div className={activeTab === 'visual' ? 'h-full overflow-y-auto pr-4 space-y-4' : 'hidden'}>
                         {visualResults.length > 0 ? (
-                            visualResults.map((res) => (
+                            visualResults.map((res) => {
+                                const isSelected = selectedClips.has(res._id);
+                                const tsStart = res._source.start_time || (res._source as any).timestamp;
+                                const tsEnd = res._source.end_time || (res._source as any).timestamp;
+                                return (
                                 <div
                                     key={res._id}
                                     onClick={() => onTimestampClick?.({ 
-                                        start: res._source.start_time || (res._source as any).timestamp, 
-                                        end: res._source.end_time || (res._source as any).timestamp, 
+                                        start: tsStart, 
+                                        end: tsEnd, 
                                         videoUrl: res._source.filename 
                                     })}
-                                    className="p-6 glass-card rounded-2xl group hover:border-white/20 transition-all cursor-pointer active:scale-[0.98] min-w-0 flex flex-col gap-4 overflow-hidden"
+                                    className={`relative p-6 glass-card rounded-2xl group hover:border-white/20 transition-all cursor-pointer active:scale-[0.98] min-w-0 flex flex-col gap-4 overflow-hidden ${isSelected ? 'ring-2 ring-emerald-500 bg-emerald-500/5' : ''}`}
                                 >
-                                    <div className="flex items-center justify-between">
+                                    <button 
+                                        onClick={(e) => toggleSelection(e, res._id, tsStart, tsEnd, res._source.filename)}
+                                        className={`absolute right-4 top-4 p-1 rounded-md border transition-all z-10 ${isSelected ? 'bg-emerald-500 border-emerald-500 text-white shadow-lg' : 'border-white/20 text-transparent hover:border-white/40 hover:text-white/50 group-hover:text-white/20 hover:bg-white/5'}`}
+                                        title={isSelected ? 'Deselect clip' : 'Select clip to join'}
+                                    >
+                                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                        </svg>
+                                    </button>
+
+                                    <div className="flex items-center justify-between pr-8">
                                         <div className="flex items-center gap-2">
                                             <div className="w-2 h-2 rounded-full bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.4)]" />
                                             <span className="text-xs text-neutral-400 font-mono tracking-tight">
@@ -499,7 +545,8 @@ export default function TranscriptView({ transcripts, initialQuery, initialAgent
                                         </div>
                                     )}
                                 </div>
-                            ))
+                                );
+                            })
                         ) : (
                             <div className="h-full flex flex-col items-center justify-center p-10 text-center">
                                 <p className="text-neutral-500 text-sm italic mb-4">Processing visual insights...</p>
@@ -512,13 +559,25 @@ export default function TranscriptView({ transcripts, initialQuery, initialAgent
 
                     <div ref={scrollContainerRef} className={activeTab === 'segments' ? 'h-full overflow-y-auto pr-4 space-y-3' : 'hidden'}>
                         {sortedSegments.length > 0 ? (
-                            sortedSegments.map((res: SearchResult) => (
+                            sortedSegments.map((res: SearchResult) => {
+                                const isSelected = selectedClips.has(res._id);
+                                return (
                                 <div
                                     key={res._id}
                                     onClick={() => onTimestampClick?.({ start: res._source.start_time, end: res._source.end_time, videoUrl: res._source.filename })}
-                                    className="p-5 glass-card rounded-xl group hover:border-white/20 transition-all cursor-pointer active:scale-[0.98] min-w-0 border-l-2 border-l-rose-500/30"
+                                    className={`relative p-5 glass-card rounded-xl group hover:border-white/20 transition-all cursor-pointer active:scale-[0.98] min-w-0 border-l-2 border-l-rose-500/30 ${isSelected ? 'ring-2 ring-rose-500 bg-white/[0.08]' : ''}`}
                                 >
-                                    <div className="flex items-center gap-2 mb-2">
+                                    <button 
+                                        onClick={(e) => toggleSelection(e, res._id, res._source.start_time, res._source.end_time, res._source.filename)}
+                                        className={`absolute right-4 top-4 p-1 rounded-md border transition-all z-10 ${isSelected ? 'bg-rose-500 border-rose-500 text-white shadow-lg' : 'border-white/20 text-transparent hover:border-white/40 hover:text-white/50 group-hover:text-white/20 hover:bg-white/5'}`}
+                                        title={isSelected ? 'Deselect clip' : 'Select clip to join'}
+                                    >
+                                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                        </svg>
+                                    </button>
+
+                                    <div className="flex items-center gap-2 mb-2 pr-8">
                                         <span className="text-rose-400 text-xs">🗣</span>
                                         <span className="text-[10px] text-neutral-500 font-mono tracking-tight">{formatTimestamp(res._source.start_time)} — {formatTimestamp(res._source.end_time)}</span>
                                     </div>
@@ -526,15 +585,41 @@ export default function TranscriptView({ transcripts, initialQuery, initialAgent
                                         <Highlight text={res._source.text} query={searchQuery} />
                                     </p>
                                 </div>
-                            ))
+                                );
+                            })
                         ) : (
                             <div className="h-full flex items-center justify-center text-neutral-500 text-sm italic">No transcript segments found</div>
                         )}
                     </div>
-
-
                 </div>
             </div>
+
+            {/* Floating Action Bar for Multi-Selection */}
+            {selectedClips.size > 0 && (
+                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-[#111]/80 backdrop-blur-2xl border border-white/20 px-5 py-3 rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.5)] animate-fade-in transition-all overflow-hidden">
+                    <div className="flex items-center gap-2 pr-2 border-r border-white/10">
+                        <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-xs font-bold text-white">
+                            {selectedClips.size}
+                        </div>
+                        <span className="text-xs font-medium text-neutral-300">Selected</span>
+                    </div>
+                    <button 
+                        onClick={handleJoinSelected} 
+                        className="px-5 py-2.5 bg-rose-500 hover:bg-rose-600 rounded-xl text-xs font-bold text-white shadow-lg shadow-rose-500/20 transition-all active:scale-95 flex items-center gap-2"
+                    >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                        Join & Edit
+                    </button>
+                    <button 
+                        onClick={() => setSelectedClips(new Map())} 
+                        className="px-4 py-2 hover:bg-white/10 rounded-xl text-xs font-medium transition-all active:scale-95 text-neutral-400"
+                    >
+                        Clear
+                    </button>
+                </div>
+            )}
 
             <DeleteModal
                 isOpen={deleteModalOpen}

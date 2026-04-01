@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 
 interface VideoPreviewProps {
-    timestamp: { start: string; end: string; videoUrl?: string } | null;
+    timestamp: { start: string; end: string; videoUrl?: string; segments?: { start: string; end: string }[] } | null;
     defaultVideoUrl?: string;
     onFinalize?: (data: { 
         clipUrl: string; 
@@ -39,6 +39,7 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
     const [voiceoverBlocks, setVoiceoverBlocks] = useState<any[]>(initialSessionState?.voiceoverBlocks || []);
     const [isGeneratingVoice, setIsGeneratingVoice] = useState(false);
     const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
+    const [videoSegments, setVideoSegments] = useState<{start: number, end: number}[]>([]);
 
     const videoRef = useRef<HTMLVideoElement>(null);
     const voiceoverRef = useRef<HTMLAudioElement | null>(null);
@@ -141,6 +142,7 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
             setVoiceoverBlocks([]);
             setTrimStart(0);
             setTrimEnd(videoDuration || 60);
+            setVideoSegments([]);
         }
 
         if (!timestamp || !activeVideoUrl) {
@@ -161,19 +163,38 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
             setClipUrl(null);
 
             try {
+                const isJoining = timestamp.segments && timestamp.segments.length > 0;
+
                 const response = await fetch('/api/clip-video', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         videoUrl: activeVideoUrl,
-                        startTime: timestamp.start,
-                        endTime: timestamp.end
+                        ...(isJoining ? {} : { startTime: timestamp.start, endTime: timestamp.end })
                     })
                 });
 
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.error || 'Failed to create clip');
-                setClipUrl(data.clipUrl);
+                
+                if (isJoining) {
+                    setFullVideoUrl(data.clipUrl);
+                    setIsEditorActive(true);
+                    onEditorToggle?.(true);
+                    
+                    const segs = timestamp.segments!.map(s => ({ start: parseTime(s.start), end: parseTime(s.end) })).sort((a,b) => a.start - b.start);
+                    setVideoSegments(segs);
+                    const s = parseTime(timestamp.start);
+                    const e = parseTime(timestamp.end);
+                    setTrimStart(s);
+                    setTrimEnd(e);
+                    if (videoRef.current) {
+                        videoRef.current.currentTime = s;
+                    }
+                } else {
+                    setClipUrl(data.clipUrl);
+                    setVideoSegments([]);
+                }
             } catch (err: any) {
                 setError(err.message || 'Failed to load video clip');
             } finally {
@@ -203,6 +224,7 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                     startTime: formatSeconds(trimStart),
                     endTime: formatSeconds(trimEnd),
                     voiceoverBlocks: voiceoverBlocks.filter(b => b.filename), // Pass all valid blocks
+                    segments: videoSegments.length > 0 ? videoSegments.map(s => ({ start: formatSeconds(s.start), end: formatSeconds(s.end) })) : undefined,
                     captionStyles: captionStyles,
                     showCaptions: showCaptions,
                     muteOriginal: muteOriginal
@@ -375,6 +397,13 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
     const onTrimStartChange = (val: number) => {
         const newVal = Math.min(val, trimEnd - 0.5);
         setTrimStart(newVal);
+        if (videoSegments.length > 0) {
+            setVideoSegments(segs => {
+                const newSegs = [...segs];
+                newSegs[0].start = newVal;
+                return newSegs;
+            });
+        }
         if (videoRef.current) {
             videoRef.current.currentTime = newVal;
         }
@@ -383,6 +412,13 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
     const onTrimEndChange = (val: number) => {
         const newVal = Math.max(val, trimStart + 0.5);
         setTrimEnd(newVal);
+        if (videoSegments.length > 0) {
+            setVideoSegments(segs => {
+                const newSegs = [...segs];
+                newSegs[newSegs.length - 1].end = newVal;
+                return newSegs;
+            });
+        }
         if (videoRef.current) {
             videoRef.current.currentTime = newVal;
         }
@@ -600,13 +636,36 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                                             onTimeUpdate={(e) => {
                                                 const time = e.currentTarget.currentTime;
                                                 setCurrentTime(time);
-                                                // Strict Loop/Clamp Logic
+                                                // Strict Loop/Clamp/Skip Logic
                                                 if (isEditorActive) {
-                                                    if (time < trimStart) {
-                                                        e.currentTarget.currentTime = trimStart;
-                                                    } else if (time > trimEnd) {
-                                                        e.currentTarget.currentTime = trimStart;
-                                                        if (!isPlaying) e.currentTarget.pause();
+                                                    if (videoSegments.length > 1) {
+                                                        let inSegment = false;
+                                                        for (let i = 0; i < videoSegments.length; i++) {
+                                                            const seg = videoSegments[i];
+                                                            if (time >= seg.start && time <= seg.end) {
+                                                                inSegment = true;
+                                                                break;
+                                                            } else if (time > seg.end && i < videoSegments.length - 1 && time < videoSegments[i+1].start) {
+                                                                e.currentTarget.currentTime = videoSegments[i+1].start;
+                                                                inSegment = true;
+                                                                break;
+                                                            }
+                                                        }
+                                                        if (!inSegment) {
+                                                            if (time > videoSegments[videoSegments.length-1].end) {
+                                                                e.currentTarget.currentTime = videoSegments[0].start;
+                                                                if (!isPlaying) e.currentTarget.pause();
+                                                            } else if (time < videoSegments[0].start) {
+                                                                e.currentTarget.currentTime = videoSegments[0].start;
+                                                            }
+                                                        }
+                                                    } else {
+                                                        if (time < trimStart) {
+                                                            e.currentTarget.currentTime = trimStart;
+                                                        } else if (time > trimEnd) {
+                                                            e.currentTarget.currentTime = trimStart;
+                                                            if (!isPlaying) e.currentTarget.pause();
+                                                        }
                                                     }
                                                 }
                                             }}
@@ -1137,28 +1196,85 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
 
                                             return (
                                                 <div className="absolute inset-x-6 h-full flex items-center pointer-events-none">
-                                                    <input
-                                                        type="range"
-                                                        min={0}
-                                                        max={videoDuration || 100}
-                                                        step={0.1}
-                                                        value={trimStart}
-                                                        onMouseDown={() => setActiveHandle('start')}
-                                                        onTouchStart={() => setActiveHandle('start')}
-                                                        onChange={(e) => onTrimStartChange(Number(e.target.value))}
-                                                        className={`absolute w-full opacity-0 cursor-pointer h-full pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-moz-range-thumb]:pointer-events-auto ${activeHandle === 'start' ? 'z-40' : 'z-20'}`}
-                                                    />
-                                                    <input
-                                                        type="range"
-                                                        min={0}
-                                                        max={videoDuration || 100}
-                                                        step={0.1}
-                                                        value={trimEnd}
-                                                        onMouseDown={() => setActiveHandle('end')}
-                                                        onTouchStart={() => setActiveHandle('end')}
-                                                        onChange={(e) => onTrimEndChange(Number(e.target.value))}
-                                                        className={`absolute w-full opacity-0 cursor-pointer h-full pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-moz-range-thumb]:pointer-events-auto ${activeHandle === 'end' ? 'z-40' : 'z-20'}`}
-                                                    />
+                                                    {videoSegments.length > 0 ? (
+                                                        videoSegments.flatMap((seg, i) => [
+                                                            <input
+                                                                key={`in-s-${i}`}
+                                                                type="range"
+                                                                min={viewStart}
+                                                                max={viewEnd}
+                                                                step={0.1}
+                                                                value={seg.start}
+                                                                onMouseDown={() => setActiveHandle(`seg-${i}-start`)}
+                                                                onTouchStart={() => setActiveHandle(`seg-${i}-start`)}
+                                                                onChange={(e) => {
+                                                                    const val = Number(e.target.value);
+                                                                    const maxAllowed = seg.end - 0.5;
+                                                                    const minAllowed = i > 0 ? videoSegments[i-1].end + 0.5 : 0;
+                                                                    const bounded = Math.max(minAllowed, Math.min(val, maxAllowed));
+                                                                    
+                                                                    setVideoSegments(segs => {
+                                                                        const newSegs = [...segs];
+                                                                        newSegs[i].start = bounded;
+                                                                        return newSegs;
+                                                                    });
+                                                                    if (i === 0) setTrimStart(bounded);
+                                                                    if (videoRef.current) videoRef.current.currentTime = bounded;
+                                                                }}
+                                                                className={`absolute w-full opacity-0 cursor-pointer h-full pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-moz-range-thumb]:pointer-events-auto ${activeHandle === `seg-${i}-start` ? 'z-40' : 'z-20'}`}
+                                                            />,
+                                                            <input
+                                                                key={`in-e-${i}`}
+                                                                type="range"
+                                                                min={viewStart}
+                                                                max={viewEnd}
+                                                                step={0.1}
+                                                                value={seg.end}
+                                                                onMouseDown={() => setActiveHandle(`seg-${i}-end`)}
+                                                                onTouchStart={() => setActiveHandle(`seg-${i}-end`)}
+                                                                onChange={(e) => {
+                                                                    const val = Number(e.target.value);
+                                                                    const minAllowed = seg.start + 0.5;
+                                                                    const maxAllowed = i < videoSegments.length - 1 ? videoSegments[i+1].start - 0.5 : videoDuration || 100;
+                                                                    const bounded = Math.max(minAllowed, Math.min(val, maxAllowed));
+                                                                    
+                                                                    setVideoSegments(segs => {
+                                                                        const newSegs = [...segs];
+                                                                        newSegs[i].end = bounded;
+                                                                        return newSegs;
+                                                                    });
+                                                                    if (i === videoSegments.length - 1) setTrimEnd(bounded);
+                                                                    if (videoRef.current) videoRef.current.currentTime = bounded;
+                                                                }}
+                                                                className={`absolute w-full opacity-0 cursor-pointer h-full pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-moz-range-thumb]:pointer-events-auto ${activeHandle === `seg-${i}-end` ? 'z-40' : 'z-20'}`}
+                                                            />
+                                                        ])
+                                                    ) : (
+                                                        <>
+                                                            <input
+                                                                type="range"
+                                                                min={0}
+                                                                max={videoDuration || 100}
+                                                                step={0.1}
+                                                                value={trimStart}
+                                                                onMouseDown={() => setActiveHandle('start')}
+                                                                onTouchStart={() => setActiveHandle('start')}
+                                                                onChange={(e) => onTrimStartChange(Number(e.target.value))}
+                                                                className={`absolute w-full opacity-0 cursor-pointer h-full pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-moz-range-thumb]:pointer-events-auto ${activeHandle === 'start' ? 'z-40' : 'z-20'}`}
+                                                            />
+                                                            <input
+                                                                type="range"
+                                                                min={0}
+                                                                max={videoDuration || 100}
+                                                                step={0.1}
+                                                                value={trimEnd}
+                                                                onMouseDown={() => setActiveHandle('end')}
+                                                                onTouchStart={() => setActiveHandle('end')}
+                                                                onChange={(e) => onTrimEndChange(Number(e.target.value))}
+                                                                className={`absolute w-full opacity-0 cursor-pointer h-full pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-moz-range-thumb]:pointer-events-auto ${activeHandle === 'end' ? 'z-40' : 'z-20'}`}
+                                                            />
+                                                        </>
+                                                    )}
                                                     <input
                                                         type="range"
                                                         min={viewStart}
@@ -1176,13 +1292,49 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                                                     />
 
                                                     {/* Visual Progress Layer (Zoomed) */}
-                                                    <div
-                                                        className="absolute h-[2px] bg-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.5)] transition-all duration-75 pointer-events-none"
-                                                        style={{
-                                                            left: `${((trimStart - viewStart) / viewRange) * 100}%`,
-                                                            width: `${((trimEnd - trimStart) / viewRange) * 100}%`
-                                                        }}
-                                                    />
+                                                    {videoSegments.length > 0 ? (
+                                                        videoSegments.map((seg, i) => (
+                                                            <div
+                                                                key={`prog-${i}`}
+                                                                className="absolute h-[2px] bg-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.5)] transition-all duration-75 pointer-events-auto group/seg"
+                                                                style={{
+                                                                    left: `${((seg.start - viewStart) / viewRange) * 100}%`,
+                                                                    width: `${((seg.end - seg.start) / viewRange) * 100}%`
+                                                                }}
+                                                            >
+                                                                <div className="absolute inset-x-0 -top-4 -bottom-4" title="Segment Block" />
+                                                                <button
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        setVideoSegments(prev => {
+                                                                            const next = [...prev];
+                                                                            next.splice(i, 1);
+                                                                            if (next.length > 0) {
+                                                                                setTrimStart(next[0].start);
+                                                                                setTrimEnd(next[next.length-1].end);
+                                                                            } else {
+                                                                                setTrimStart(0);
+                                                                                setTrimEnd(videoDuration || 60);
+                                                                            }
+                                                                            return next;
+                                                                        });
+                                                                    }}
+                                                                    className="absolute top-1/2 -translate-y-1/2 left-1/2 -translate-x-1/2 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-white opacity-0 group-hover/seg:opacity-100 hover:scale-110 active:scale-95 transition-all shadow-xl z-[70] border border-red-400 cursor-pointer"
+                                                                    title="Remove Segment"
+                                                                >
+                                                                    <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M6 18L18 6M6 6l12 12" /></svg>
+                                                                </button>
+                                                            </div>
+                                                        ))
+                                                    ) : (
+                                                        <div
+                                                            className="absolute h-[2px] bg-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.5)] transition-all duration-75 pointer-events-none"
+                                                            style={{
+                                                                left: `${((trimStart - viewStart) / viewRange) * 100}%`,
+                                                                width: `${((trimEnd - trimStart) / viewRange) * 100}%`
+                                                            }}
+                                                        />
+                                                    )}
 
                                                     {/* Playhead Indicator (Green - Zoomed) */}
                                                     <div
@@ -1191,10 +1343,21 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                                                     />
 
                                                     {/* Handle Layer (Zoomed) */}
-                                                    <div className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full border-2 border-amber-500 shadow-xl pointer-events-none transition-transform duration-200 ${activeHandle === 'start' ? 'scale-125 z-40' : 'z-20'}`}
-                                                        style={{ left: `${((trimStart - viewStart) / viewRange) * 100}%` }} />
-                                                    <div className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full border-2 border-amber-500 shadow-xl pointer-events-none transition-transform duration-200 ${activeHandle === 'end' ? 'scale-125 z-40' : 'z-20'}`}
-                                                        style={{ left: `${((trimEnd - viewStart) / viewRange) * 100}%` }} />
+                                                    {videoSegments.length > 0 ? (
+                                                        videoSegments.flatMap((seg, i) => [
+                                                            <div key={`h-s-${i}`} className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full border-2 border-amber-500 shadow-xl pointer-events-none transition-transform duration-200 ${activeHandle === `seg-${i}-start` ? 'scale-125 z-40' : 'z-20'}`}
+                                                                style={{ left: `${((seg.start - viewStart) / viewRange) * 100}%` }} />,
+                                                            <div key={`h-e-${i}`} className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full border-2 border-amber-500 shadow-xl pointer-events-none transition-transform duration-200 ${activeHandle === `seg-${i}-end` ? 'scale-125 z-40' : 'z-20'}`}
+                                                                style={{ left: `${((seg.end - viewStart) / viewRange) * 100}%` }} />
+                                                        ])
+                                                    ) : (
+                                                        <>
+                                                            <div className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full border-2 border-amber-500 shadow-xl pointer-events-none transition-transform duration-200 ${activeHandle === 'start' ? 'scale-125 z-40' : 'z-20'}`}
+                                                                style={{ left: `${((trimStart - viewStart) / viewRange) * 100}%` }} />
+                                                            <div className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full border-2 border-amber-500 shadow-xl pointer-events-none transition-transform duration-200 ${activeHandle === 'end' ? 'scale-125 z-40' : 'z-20'}`}
+                                                                style={{ left: `${((trimEnd - viewStart) / viewRange) * 100}%` }} />
+                                                        </>
+                                                    )}
                                                 </div>
                                             );
                                         })()}

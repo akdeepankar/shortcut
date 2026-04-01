@@ -8,7 +8,7 @@ import ProcessingModal from './components/processing-modal';
 export default function Home() {
     const router = useRouter();
     const [url, setUrl] = useState('');
-    const [engine, setEngine] = useState<'openai' | 'elevenlabs'>('openai');
+    const [engine, setEngine] = useState<'openai' | 'elevenlabs'>('elevenlabs');
     const [showSettings, setShowSettings] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
     const [userId, setUserId] = useState<string>('global');
@@ -44,8 +44,18 @@ export default function Home() {
             <div className="absolute top-[10%] right-[-10%] w-[50%] h-[50%] bg-indigo-500/10 rounded-full blur-[160px] pointer-events-none animate-pulse-slow"></div>
             <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 rounded-full blur-[160px] pointer-events-none animate-pulse-slow"></div>
 
+            {/* Navbar */}
+            <nav className="absolute top-0 inset-x-0 h-24 flex items-center justify-between px-10 z-50 animate-fade-in">
+                <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-2xl bg-white shadow-xl shadow-white/5 flex items-center justify-center">
+                        <svg className="w-5 h-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132A1 1 0 000-1.664z" /></svg>
+                    </div>
+                    <span className="font-black text-white text-2xl tracking-tighter italic">ShortCut</span>
+                </div>
+            </nav>
+
             {/* Content Container */}
-            <div className="flex-1 flex flex-col z-10 max-w-5xl mx-auto w-full px-8 pt-24">
+            <div className="flex-1 flex flex-col z-10 max-w-5xl mx-auto w-full px-8 pt-24 mt-12">
                 
                 {/* Minimal Hero */}
 
@@ -117,7 +127,7 @@ export default function Home() {
                 {/* Ultra Minimal Footer */}
                 <footer className="py-12 flex items-center justify-center animate-fade-in opacity-40">
                     <p className="text-[9px] uppercase tracking-[0.3em] text-neutral-500 font-black">
-                        Clipper System &copy; {new Date().getFullYear()}
+                        ShortCut System &copy; {new Date().getFullYear()}
                     </p>
                 </footer>
             </div>

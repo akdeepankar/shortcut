@@ -68,6 +68,8 @@ export async function POST(request: NextRequest) {
                 return `${h.toString()}:${m.toString().padStart(2, '0')}:${s.toFixed(2).padStart(5, '0')}`;
             };
 
+            const shiftAmount = startSeconds;
+
             const ffmpegStartTime = `${Math.floor(startSeconds / 3600).toString().padStart(2,'0')}:${Math.floor((startSeconds % 3600)/60).toString().padStart(2,'0')}:${(startSeconds % 60).toFixed(3).padStart(6,'0')}`;
 
             // Step 2: ASS Generation (Accurate Styling)
@@ -98,9 +100,11 @@ export async function POST(request: NextRequest) {
                 assContent += `[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
 
                 voiceoverBlocks.forEach((b: any) => {
-                    if (!b.text.trim()) return;
-                    const start = toAssTime(b.startTime);
-                    const end = toAssTime(b.startTime + (b.duration || 4));
+                    const duration = b.duration || 4;
+                    const blockStart = Math.max(0, b.startTime - shiftAmount);
+                    const blockEnd = blockStart + duration;
+                    const start = toAssTime(blockStart);
+                    const end = toAssTime(blockEnd);
                     let text = b.text.trim();
                     if (captionStyles?.highlight && b.alignment && b.alignment.characters) {
                         const starts = b.alignment.character_start_times_seconds;
@@ -127,21 +131,25 @@ export async function POST(request: NextRequest) {
             let inputs = "";
             const voiceBlocksWithFiles = voiceoverBlocks.filter((b: any) => b.filename);
             
+            let baseA = muteOriginal ? null : "0:a";
             if (voiceBlocksWithFiles.length > 0) {
                 inputs = voiceBlocksWithFiles.map((b: any) => `-i "${path.join(tempDir, b.filename)}"`).join(' ');
                 voiceBlocksWithFiles.forEach((b: any, index: number) => {
-                    const delay = Math.round(b.startTime * 1000);
+                    const delay = Math.max(0, Math.round((b.startTime - shiftAmount) * 1000));
                     filterComplex += `[${index + 1}:a]adelay=${delay}|${delay}[a${index + 1}];`;
                 });
                 const amixInputs = voiceBlocksWithFiles.map((_: any, i: number) => `[a${i + 1}]`).join('');
                 if (muteOriginal) {
                     if (voiceBlocksWithFiles.length > 1) {
-                        filterComplex += `${amixInputs}amix=inputs=${voiceBlocksWithFiles.length}:duration=first[outa]`;
+                        filterComplex += `${amixInputs}amix=inputs=${voiceBlocksWithFiles.length}:duration=first[amixed]`;
+                        baseA = "amixed";
                     } else {
-                        filterComplex += `[a1]acopy[outa]`;
+                        filterComplex += `[a1]acopy[amixed]`;
+                        baseA = "amixed";
                     }
                 } else {
-                    filterComplex += `[0:a]${amixInputs}amix=inputs=${voiceBlocksWithFiles.length + 1}:duration=first[outa]`;
+                    filterComplex += `[0:a]${amixInputs}amix=inputs=${voiceBlocksWithFiles.length + 1}:duration=first[amixed]`;
+                    baseA = "amixed";
                 }
             }
 
@@ -151,19 +159,48 @@ export async function POST(request: NextRequest) {
                 videoFilter = `subtitles='${escapedAssPath}'`;
             }
 
-            let clipCommand: string;
-            if (filterComplex || videoFilter || muteOriginal) {
-                let mapV = "0:v";
-                let mapA = voiceBlocksWithFiles.length > 0 ? "[outa]" : (muteOriginal ? null : "0:a");
-                
-                if (videoFilter) {
-                    filterComplex = (filterComplex ? filterComplex + ";" : "") + `[0:v]${videoFilter}[outv]`;
-                    mapV = "[outv]";
-                }
+            let baseV = "0:v";
+            if (videoFilter) {
+                filterComplex = (filterComplex ? filterComplex + ";" : "") + `[0:v]${videoFilter}[vsub]`;
+                baseV = "vsub";
+            }
 
-                const mapAArg = mapA ? `-map "${mapA}"` : "-an";
+            let mapV = baseV;
+            let mapA = baseA;
+
+            // Optional Concat specific parts using body.segments
+            if (body.segments && body.segments.length > 1) {
+                let concatInputs = "";
+                filterComplex += filterComplex ? ";" : "";
+                
+                for(let i=0; i<body.segments.length; i++) {
+                    const segStartRaw = body.segments[i].start.includes(':') ? parseTime(body.segments[i].start) : parseFloat(body.segments[i].start);
+                    const segEndRaw = body.segments[i].end.includes(':') ? parseTime(body.segments[i].end) : parseFloat(body.segments[i].end);
+                    let segStart = Math.max(0, segStartRaw - shiftAmount);
+                    let segEnd = Math.max(0, segEndRaw - shiftAmount);
+                    let dur = segEnd - segStart;
+                    if (dur <= 0.1) dur = 1;
+
+                    filterComplex += `[${baseV}]trim=start=${segStart}:duration=${dur},setpts=PTS-STARTPTS[vseg${i}]`;
+                    concatInputs += `[vseg${i}]`;
+
+                    if (baseA) {
+                        filterComplex += `;[${baseA}]atrim=start=${segStart}:duration=${dur},asetpts=PTS-STARTPTS[aseg${i}]`;
+                        concatInputs += `[aseg${i}]`;
+                    }
+                    if (i < body.segments.length - 1) filterComplex += ";";
+                }
+                
+                filterComplex += `;${concatInputs}concat=n=${body.segments.length}:v=1:a=${baseA ? 1 : 0}[outv]${baseA ? '[outa]' : ''}`;
+                mapV = "outv";
+                mapA = baseA ? "outa" : null;
+            }
+
+            let clipCommand: string;
+            if (filterComplex || muteOriginal || (body.segments && body.segments.length > 1)) {
+                const mapAArg = mapA ? `-map "[${mapA}]"` : "-an";
                 const filterArg = filterComplex ? `-filter_complex "${filterComplex}"` : "";
-                clipCommand = `ffmpeg -ss ${ffmpegStartTime} -i "${downloadPath}" ${inputs} -t ${duration.toFixed(3)} ${filterArg} -map "${mapV}" ${mapAArg} -c:v libx264 ${mapA ? '-c:a aac' : ''} -preset fast -crf 22 "${outputPath}"`;
+                clipCommand = `ffmpeg -ss ${ffmpegStartTime} -i "${downloadPath}" ${inputs} -t ${duration.toFixed(3)} ${filterArg} -map "[${mapV}]" ${mapAArg} -c:v libx264 ${mapA ? '-c:a aac' : ''} -preset fast -crf 22 "${outputPath}"`;
             } else {
                 clipCommand = `ffmpeg -ss ${ffmpegStartTime} -i "${downloadPath}" -t ${duration.toFixed(3)} -c:v libx264 -c:a aac -preset fast -crf 22 "${outputPath}"`;
             }

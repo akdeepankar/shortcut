@@ -51,7 +51,7 @@ interface SocialMetadata {
 }
 
 export default function TranscriptsClient({ transcripts, initialQuery, initialAgentResponse, videoUrl }: TranscriptsClientProps) {
-    const [selectedTimestamp, setSelectedTimestamp] = useState<{ start: string; end: string; videoUrl?: string } | null>(null);
+    const [selectedTimestamp, setSelectedTimestamp] = useState<{ start: string; end: string; videoUrl?: string; segments?: { start: string; end: string }[] } | null>(null);
     const [isMinimized, setIsMinimized] = useState(false);
     const [finalizedClip, setFinalizedClip] = useState<FinalizedClip | null>(null);
     const [socialMeta, setSocialMeta] = useState<SocialMetadata | null>(null);
