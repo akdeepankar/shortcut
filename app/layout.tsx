@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Clipper - AI Video Extraction",
+  title: "Shortcut",
   description: "Extract short form videos with natural language.",
 };
 
