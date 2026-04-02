@@ -42,3 +42,12 @@ next-env.d.ts
 
 # temp video clips
 /temp
+
+# OpenNext
+.open-next
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example
