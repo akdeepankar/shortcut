@@ -66,7 +66,7 @@ export default function Home() {
                 <main className="flex-1 flex flex-col items-center justify-center text-center mt-[-40px]">
                     
                     <h1 className="text-4xl md:text-5xl font-black tracking-tight text-white mb-6 leading-tight animate-fade-in uppercase">
-                        Edit at the speed of thought.
+                        Shortcuts to viral content.
                     </h1>
 
                     <p className="max-w-md text-sm text-neutral-500 mb-12 leading-relaxed font-medium animate-fade-in opacity-80 uppercase tracking-widest">
