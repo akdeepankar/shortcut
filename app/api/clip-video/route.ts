@@ -99,10 +99,21 @@ export async function POST(request: NextRequest) {
                 assContent += `Style: Default,Inter,${fontSize},${activeColor},${inactiveColor},&H00000000,${backColor},1,0,0,0,100,100,0,0,${borderStyle},4,0,${alignment},80,80,80,1\n\n`;
                 assContent += `[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
 
-                voiceoverBlocks.forEach((b: any) => {
+                // Sort to iterate sequentially and prevent overlap stacking
+                const sortedBlocks = [...voiceoverBlocks].sort((a: any, b: any) => a.startTime - b.startTime);
+
+                sortedBlocks.forEach((b: any, index: number) => {
                     const duration = b.duration || 4;
-                    const blockStart = Math.max(0, b.startTime - shiftAmount);
-                    const blockEnd = blockStart + duration;
+                    const blockStart = Math.max(0, b.startTime);
+                    
+                    // Linger without overlapping the next block
+                    let linger = 1.0;
+                    if (index < sortedBlocks.length - 1) {
+                        const nextStart = sortedBlocks[index + 1].startTime;
+                        linger = Math.min(linger, Math.max(0, nextStart - (blockStart + duration)));
+                    }
+                    const blockEnd = blockStart + duration + linger;
+                    
                     const start = toAssTime(blockStart);
                     const end = toAssTime(blockEnd);
                     let text = b.text.trim();
@@ -131,48 +142,12 @@ export async function POST(request: NextRequest) {
             let inputs = "";
             const voiceBlocksWithFiles = voiceoverBlocks.filter((b: any) => b.filename);
             
-            let baseA = muteOriginal ? null : "0:a";
-            if (voiceBlocksWithFiles.length > 0) {
-                inputs = voiceBlocksWithFiles.map((b: any) => `-i "${path.join(tempDir, b.filename)}"`).join(' ');
-                voiceBlocksWithFiles.forEach((b: any, index: number) => {
-                    const delay = Math.max(0, Math.round((b.startTime - shiftAmount) * 1000));
-                    filterComplex += `[${index + 1}:a]adelay=${delay}|${delay}[a${index + 1}];`;
-                });
-                const amixInputs = voiceBlocksWithFiles.map((_: any, i: number) => `[a${i + 1}]`).join('');
-                if (muteOriginal) {
-                    if (voiceBlocksWithFiles.length > 1) {
-                        filterComplex += `${amixInputs}amix=inputs=${voiceBlocksWithFiles.length}:duration=first[amixed]`;
-                        baseA = "amixed";
-                    } else {
-                        filterComplex += `[a1]acopy[amixed]`;
-                        baseA = "amixed";
-                    }
-                } else {
-                    filterComplex += `[0:a]${amixInputs}amix=inputs=${voiceBlocksWithFiles.length + 1}:duration=first[amixed]`;
-                    baseA = "amixed";
-                }
-            }
+            let mapV = "0:v";
+            let mapA: string | null = muteOriginal ? null : "0:a";
 
-            let videoFilter = "";
-            if (assPath) {
-                const escapedAssPath = assPath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''");
-                videoFilter = `subtitles='${escapedAssPath}'`;
-            }
-
-            let baseV = "0:v";
-            if (videoFilter) {
-                filterComplex = (filterComplex ? filterComplex + ";" : "") + `[0:v]${videoFilter}[vsub]`;
-                baseV = "vsub";
-            }
-
-            let mapV = baseV;
-            let mapA = baseA;
-
-            // Optional Concat specific parts using body.segments
+            // 1. Process Concat Segments FIRST
             if (body.segments && body.segments.length > 1) {
                 let concatInputs = "";
-                filterComplex += filterComplex ? ";" : "";
-                
                 for(let i=0; i<body.segments.length; i++) {
                     const segStartRaw = body.segments[i].start.includes(':') ? parseTime(body.segments[i].start) : parseFloat(body.segments[i].start);
                     const segEndRaw = body.segments[i].end.includes(':') ? parseTime(body.segments[i].end) : parseFloat(body.segments[i].end);
@@ -181,28 +156,59 @@ export async function POST(request: NextRequest) {
                     let dur = segEnd - segStart;
                     if (dur <= 0.1) dur = 1;
 
-                    filterComplex += `[${baseV}]trim=start=${segStart}:duration=${dur},setpts=PTS-STARTPTS[vseg${i}]`;
+                    filterComplex += (filterComplex ? ";" : "") + `[0:v]trim=start=${segStart}:duration=${dur},setpts=PTS-STARTPTS[vseg${i}]`;
                     concatInputs += `[vseg${i}]`;
 
-                    if (baseA) {
-                        filterComplex += `;[${baseA}]atrim=start=${segStart}:duration=${dur},asetpts=PTS-STARTPTS[aseg${i}]`;
+                    if (mapA) {
+                        filterComplex += `;[${mapA}]atrim=start=${segStart}:duration=${dur},asetpts=PTS-STARTPTS[aseg${i}]`;
                         concatInputs += `[aseg${i}]`;
                     }
-                    if (i < body.segments.length - 1) filterComplex += ";";
                 }
                 
-                filterComplex += `;${concatInputs}concat=n=${body.segments.length}:v=1:a=${baseA ? 1 : 0}[outv]${baseA ? '[outa]' : ''}`;
-                mapV = "outv";
-                mapA = baseA ? "outa" : null;
+                filterComplex += `;${concatInputs}concat=n=${body.segments.length}:v=1:a=${mapA ? 1 : 0}[outv_concat]${mapA ? '[outa_concat]' : ''}`;
+                mapV = "outv_concat";
+                if (mapA) mapA = "outa_concat";
+            }
+
+            // 2. Video Filter (Subtitles applied to concatenated stitched stream)
+            if (assPath) {
+                const escapedAssPath = assPath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''");
+                filterComplex += (filterComplex ? ";" : "") + `[${mapV}]subtitles='${escapedAssPath}'[vsub]`;
+                mapV = "vsub";
+            }
+
+            // 3. Audio Mixing (Voiceovers dropped onto concatenated stitched stream)
+            if (voiceBlocksWithFiles.length > 0) {
+                inputs = voiceBlocksWithFiles.map((b: any) => `-i "${path.join(tempDir, b.filename)}"`).join(' ');
+                
+                let adelayFilters = "";
+                voiceBlocksWithFiles.forEach((b: any, index: number) => {
+                    const delay = Math.max(0, Math.round(b.startTime * 1000));
+                    adelayFilters += (adelayFilters || filterComplex ? ";" : "") + `[${index + 1}:a]adelay=${delay}:all=1[a${index + 1}]`;
+                });
+                filterComplex += adelayFilters;
+
+                const amixInputs = voiceBlocksWithFiles.map((_: any, i: number) => `[a${i + 1}]`).join('');
+                if (!mapA) {
+                    if (voiceBlocksWithFiles.length > 1) {
+                        filterComplex += `;${amixInputs}amix=inputs=${voiceBlocksWithFiles.length}:duration=longest[amixed]`;
+                    } else {
+                        filterComplex += `;[a1]anull[amixed]`;
+                    }
+                    mapA = "amixed";
+                } else {
+                    filterComplex += `;[${mapA}]${amixInputs}amix=inputs=${voiceBlocksWithFiles.length + 1}:duration=longest[amixed]`;
+                    mapA = "amixed";
+                }
             }
 
             let clipCommand: string;
             if (filterComplex || muteOriginal || (body.segments && body.segments.length > 1)) {
                 const mapAArg = mapA ? `-map "[${mapA}]"` : "-an";
                 const filterArg = filterComplex ? `-filter_complex "${filterComplex}"` : "";
-                clipCommand = `ffmpeg -ss ${ffmpegStartTime} -i "${downloadPath}" ${inputs} -t ${duration.toFixed(3)} ${filterArg} -map "[${mapV}]" ${mapAArg} -c:v libx264 ${mapA ? '-c:a aac' : ''} -preset fast -crf 22 "${outputPath}"`;
+                clipCommand = `ffmpeg -ss ${ffmpegStartTime} -i "${downloadPath}" ${inputs} -t ${duration.toFixed(3)} ${filterArg} -map "[${mapV}]" ${mapAArg} -c:v libx264 ${mapA ? '-c:a aac -b:a 192k' : ''} -preset fast -crf 17 -profile:v high -pix_fmt yuv420p "${outputPath}"`;
             } else {
-                clipCommand = `ffmpeg -ss ${ffmpegStartTime} -i "${downloadPath}" -t ${duration.toFixed(3)} -c:v libx264 -c:a aac -preset fast -crf 22 "${outputPath}"`;
+                clipCommand = `ffmpeg -ss ${ffmpegStartTime} -i "${downloadPath}" -t ${duration.toFixed(3)} -c:v libx264 -c:a aac -b:a 192k -preset fast -crf 17 -profile:v high -pix_fmt yuv420p "${outputPath}"`;
             }
 
             await execAsync(clipCommand, { maxBuffer: 1024 * 1024 * 100 });

@@ -65,12 +65,17 @@ export default function Home() {
                 {/* Minimal Hero */}
                 <main className="flex-1 flex flex-col items-center justify-center text-center mt-[-40px]">
                     
-                    <h1 className="text-4xl md:text-5xl font-black tracking-tight text-white mb-6 leading-tight animate-fade-in uppercase">
+                    <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/[0.03] border border-white/10 mb-8 animate-fade-in shadow-[0_0_20px_rgba(255,255,255,0.05)] backdrop-blur-md">
+                        <span className="w-1.5 h-1.5 rounded-full bg-slate-200 shadow-[0_0_10px_rgba(226,232,240,0.5)] animate-pulse"></span>
+                        <span className="text-[9px] uppercase tracking-[0.2em] font-black text-slate-300">AI Video Production Engine</span>
+                    </div>
+
+                    <h1 className="text-5xl md:text-7xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-br from-white via-slate-200 to-slate-500 mb-6 leading-[1.1] animate-fade-in drop-shadow-2xl px-4 uppercase">
                         Shortcuts to viral content.
                     </h1>
 
-                    <p className="max-w-md text-sm text-neutral-500 mb-12 leading-relaxed font-medium animate-fade-in opacity-80 uppercase tracking-widest">
-                        Ingest YouTube videos. Synthesis speech and visuals. Ask anything.
+                    <p className="max-w-xl mx-auto text-xs md:text-sm text-slate-400/80 mb-12 leading-loose font-medium animate-fade-in uppercase tracking-[0.2em] px-4">
+                        Ingest raw video. <span className="text-slate-200 font-black pb-0.5 border-b border-white/20">Synthesize Intelligence.</span> Find the perfect cut.
                     </p>
 
                     {/* Minimal Input Area - Spotlight Style */}
