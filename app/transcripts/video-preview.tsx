@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { generatePostCaption } from '@/app/actions';
 
 interface VideoPreviewProps {
     timestamp: { start: string; end: string; videoUrl?: string; segments?: { start: string; end: string }[] } | null;
@@ -14,6 +15,7 @@ interface VideoPreviewProps {
         captionStyles?: any;
         showCaptions?: boolean;
         muteOriginal?: boolean;
+        magicPrompt?: string;
     }) => void;
     onEditorToggle?: (isActive: boolean) => void;
     initialSessionState?: any;
@@ -79,6 +81,10 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
         highlight: true
     });
     const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+
+    const [postCaption, setPostCaption] = useState<string>('');
+    const [isGeneratingCaption, setIsGeneratingCaption] = useState<boolean>(false);
+    const [thumbnailDataUrl, setThumbnailDataUrl] = useState<string | null>(null);
 
     useEffect(() => {
         let rafId: number;
@@ -247,7 +253,8 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                 voiceoverBlocks: voiceoverBlocks,
                 captionStyles: captionStyles,
                 showCaptions: showCaptions,
-                muteOriginal: muteOriginal
+                muteOriginal: muteOriginal,
+                magicPrompt: magicPrompt
             });
         } catch (err: any) {
             setError(err.message || 'Failed to trim video');
@@ -480,7 +487,8 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                                         voiceoverBlocks: voiceoverBlocks,
                                         captionStyles: captionStyles,
                                         showCaptions: showCaptions,
-                                        muteOriginal: muteOriginal
+                                        muteOriginal: muteOriginal,
+                                        magicPrompt: magicPrompt
                                     })}
                                     className="px-6 h-10 bg-gradient-to-r from-rose-600 to-red-600 text-white text-[10px] font-black uppercase tracking-widest rounded-lg hover:scale-105 active:scale-95 transition-all shadow-[0_0_20px_rgba(225,29,72,0.4)] border border-rose-500/50 flex items-center gap-2"
                                 >
@@ -1590,6 +1598,129 @@ export default function VideoPreview({ timestamp, defaultVideoUrl, onFinalize, o
                                                 </div>
                                                 <span className="text-[10px] font-mono text-rose-500">98%</span>
                                             </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Thumbnail & Caption Generation Platform */}
+                                    <div className="grid grid-cols-2 gap-6">
+                                        {/* Thumbnail Capture Card */}
+                                        <div className="p-6 bg-white/[0.03] border border-white/5 rounded-3xl flex flex-col gap-4 relative overflow-hidden group/capture-card">
+                                            <div className="absolute inset-x-0 -bottom-20 h-40 bg-amber-500/5 blur-3xl group-hover/capture-card:bg-amber-500/10 transition-colors pointer-events-none" />
+                                            <div className="flex items-center justify-between relative z-10">
+                                                <h3 className="text-xs font-black uppercase tracking-widest text-white flex items-center gap-2">
+                                                    <svg className="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                                                    Digital Asset Thumbnail
+                                                </h3>
+                                                {thumbnailDataUrl && (
+                                                    <button onClick={() => {
+                                                        const link = document.createElement('a');
+                                                        link.href = thumbnailDataUrl;
+                                                        link.download = `thumbnail_${Date.now()}.jpg`;
+                                                        link.click();
+                                                    }} className="text-[9px] font-bold uppercase text-amber-500 hover:text-amber-400 transition-colors">Download Master</button>
+                                                )}
+                                            </div>
+                                            <p className="text-[10px] text-neutral-400 font-medium relative z-10">Scrub the video above to an optimal frame, then generate your promotional thumbnail.</p>
+                                            
+                                            <div className="flex flex-col gap-2 relative z-10 w-full mb-2">
+                                                <div className="flex items-center justify-between text-[10px] text-white/50 mb-1">
+                                                    <span>Fine-Tune Selection</span>
+                                                    <span>{videoRef.current?.currentTime?.toFixed(1) || '0.0'}s</span>
+                                                </div>
+                                                <input 
+                                                    type="range"
+                                                    min={0}
+                                                    max={videoRef.current?.duration || 100}
+                                                    step={0.1}
+                                                    value={videoRef.current?.currentTime || 0}
+                                                    onChange={(e) => {
+                                                        if (videoRef.current) {
+                                                            const val = parseFloat(e.target.value);
+                                                            videoRef.current.currentTime = val;
+                                                            videoRef.current.pause();
+                                                        }
+                                                    }}
+                                                    className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-amber-500 group-hover/capture-card:bg-white/20 transition-colors"
+                                                />
+                                            </div>
+
+                                            {thumbnailDataUrl ? (
+                                                <div className="relative w-full aspect-video rounded-2xl overflow-hidden border border-white/10 group/thumb shadow-2xl z-10">
+                                                    <img src={thumbnailDataUrl} className="w-full h-full object-cover" alt="Selected Thumbnail" />
+                                                    <div className="absolute inset-0 bg-black/60 opacity-0 group-hover/thumb:opacity-100 transition-opacity flex items-center justify-center gap-4 backdrop-blur-sm">
+                                                        <button onClick={() => setThumbnailDataUrl(null)} className="px-6 py-2 bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-white hover:bg-white hover:text-black transition-all border border-white/20">Recapture Frame</button>
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <button 
+                                                    onClick={() => {
+                                                        if (!videoRef.current) return;
+                                                        const canvas = document.createElement('canvas');
+                                                        canvas.width = videoRef.current.videoWidth || 1920;
+                                                        canvas.height = videoRef.current.videoHeight || 1080;
+                                                        canvas.getContext('2d')?.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+                                                        setThumbnailDataUrl(canvas.toDataURL('image/jpeg', 0.95));
+                                                    }}
+                                                    className="relative z-10 w-full aspect-video rounded-2xl border-2 border-dashed border-white/10 flex flex-col items-center justify-center gap-4 hover:border-amber-500/50 hover:bg-amber-500/[0.02] transition-all group/capture"
+                                                >
+                                                    <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center group-hover/capture:scale-110 group-hover/capture:bg-amber-500/20 transition-all border border-white/5">
+                                                        <svg className="w-5 h-5 text-neutral-400 group-hover/capture:text-amber-500 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                                                    </div>
+                                                    <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 group-hover/capture:text-amber-500 transition-colors">Capture Current Video Frame</span>
+                                                </button>
+                                            )}
+                                        </div>
+
+                                        {/* AI Post Caption Generator */}
+                                        <div className="p-6 bg-white/[0.03] border border-white/5 rounded-3xl flex flex-col gap-4 relative overflow-hidden group/caption-card">
+                                            <div className="absolute inset-x-0 -bottom-20 h-40 bg-rose-500/5 blur-3xl group-hover/caption-card:bg-rose-500/10 transition-colors pointer-events-none" />
+                                            <div className="flex items-center justify-between relative z-10">
+                                                <h3 className="text-xs font-black uppercase tracking-widest text-white flex items-center gap-2">
+                                                    <svg className="w-4 h-4 text-rose-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
+                                                    Social Marketing Intelligence
+                                                </h3>
+                                                {postCaption && (
+                                                    <button onClick={() => navigator.clipboard.writeText(postCaption)} className="text-[9px] font-bold uppercase text-amber-500 hover:text-amber-400 transition-colors flex items-center gap-1">
+                                                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" /></svg>
+                                                        Copy to Clipboard
+                                                    </button>
+                                                )}
+                                            </div>
+                                            
+                                            {postCaption ? (
+                                                <div className="flex-1 flex flex-col gap-3 relative z-10">
+                                                    <textarea 
+                                                        value={postCaption}
+                                                        onChange={(e) => setPostCaption(e.target.value)}
+                                                        className="flex-1 w-full bg-black/40 border border-white/10 rounded-2xl p-5 text-sm text-neutral-300 resize-none focus:outline-none focus:border-rose-500/50 transition-colors custom-scrollbar shadow-inner leading-relaxed"
+                                                        placeholder="Your AI-generated social caption will appear here..."
+                                                    />
+                                                    <button onClick={() => { setPostCaption(''); setIsGeneratingCaption(false); }} className="text-[9px] font-bold uppercase text-neutral-500 hover:text-white transition-colors text-left flex items-center gap-1 group/regen">
+                                                        <svg className="w-3 h-3 group-hover/regen:rotate-180 transition-transform duration-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                                                        Regenerate Caption
+                                                    </button>
+                                                </div>
+                                            ) : (
+                                                <div className="flex-1 flex flex-col items-center justify-center gap-6 border-2 border-dashed border-white/10 rounded-2xl p-6 relative z-10">
+                                                    <p className="text-[10px] text-center text-neutral-400 font-medium leading-relaxed max-w-[80%]">Leverage our marketing AI to synthesize your Magic Script constraints into a highly engaging, viral-ready social media caption.</p>
+                                                    <button 
+                                                        onClick={async () => {
+                                                            setIsGeneratingCaption(true);
+                                                            const res = await generatePostCaption(magicPrompt || "Write a catchy post promoting this newly produced video.");
+                                                            setPostCaption(res);
+                                                            setIsGeneratingCaption(false);
+                                                        }}
+                                                        disabled={isGeneratingCaption}
+                                                        className={`px-8 py-3.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-2xl flex items-center gap-3 ${isGeneratingCaption ? 'bg-neutral-800 text-neutral-500 cursor-not-allowed border border-white/5' : 'bg-gradient-to-r from-rose-500 to-amber-500 text-white hover:scale-105 active:scale-95 shadow-[0_0_20px_rgba(244,63,94,0.3)]'}`}
+                                                    >
+                                                        {isGeneratingCaption ? (
+                                                            <><div className="w-3.5 h-3.5 border-2 border-neutral-600 border-t-white rounded-full animate-spin" /> Synthesizing Strategy...</>
+                                                        ) : (
+                                                            <><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg> Generate Social Caption</>
+                                                        )}
+                                                    </button>
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 </div>

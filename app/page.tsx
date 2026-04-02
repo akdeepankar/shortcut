@@ -44,13 +44,16 @@ export default function Home() {
             <div className="absolute top-[10%] right-[-10%] w-[50%] h-[50%] bg-indigo-500/10 rounded-full blur-[160px] pointer-events-none animate-pulse-slow"></div>
             <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 rounded-full blur-[160px] pointer-events-none animate-pulse-slow"></div>
 
+            {/* Background Icon */}
+            <div className="absolute -bottom-32 -right-32 opacity-[0.03] pointer-events-none rotate-[-15deg]">
+                <img src="https://cdn-icons-png.freepik.com/256/4415/4415274.png?semt=ais_white_label" className="w-[100vw] h-[100vw] max-w-[1000px] max-h-[1000px] filter invert" alt="" />
+            </div>
+
             {/* Navbar */}
             <nav className="absolute top-0 inset-x-0 h-24 flex items-center justify-between px-10 z-50 animate-fade-in">
-                <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 rounded-2xl bg-white shadow-xl shadow-white/5 flex items-center justify-center">
-                        <svg className="w-5 h-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132A1 1 0 000-1.664z" /></svg>
-                    </div>
-                    <span className="font-black text-white text-2xl tracking-tighter italic">ShortCut</span>
+                <div className="flex items-center gap-2 relative group">
+                    <img src="https://cdn-icons-png.freepik.com/256/4415/4415274.png?semt=ais_white_label" className="w-5 h-5 relative z-10 filter invert opacity-80" alt="Shortcut Logo" />
+                    <span className="text-xl font-bold tracking-tighter text-slate-300">Shortcut.</span>
                 </div>
             </nav>
 
@@ -63,7 +66,7 @@ export default function Home() {
                 <main className="flex-1 flex flex-col items-center justify-center text-center mt-[-40px]">
                     
                     <h1 className="text-4xl md:text-5xl font-black tracking-tight text-white mb-6 leading-tight animate-fade-in uppercase">
-                        Intelligence for every frame.
+                        Edit at the speed of thought.
                     </h1>
 
                     <p className="max-w-md text-sm text-neutral-500 mb-12 leading-relaxed font-medium animate-fade-in opacity-80 uppercase tracking-widest">
@@ -109,18 +112,7 @@ export default function Home() {
                             </div>
                         </div>
 
-                        <div className="mt-8 flex items-center justify-center gap-6 animate-fade-in">
-                            <button
-                                type="button"
-                                onClick={() => router.push('/transcripts')}
-                                className="text-[10px] font-black uppercase tracking-widest text-neutral-500 hover:text-white transition-all flex items-center gap-2 group"
-                            >
-                                Libraries
-                                <svg className="w-3 h-3 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M17 8l4 4m0 0l-4 4m4-4H3" />
-                                </svg>
-                            </button>
-                        </div>
+
                     </form>
                 </main>
 

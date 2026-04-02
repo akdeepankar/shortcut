@@ -8,6 +8,8 @@ import ProcessingModal from '../components/processing-modal';
 import { generateSocialMetadata } from '../actions-meta';
 import ReactMarkdown from 'react-markdown';
 import { useRef } from 'react';
+import { generatePostCaption, generateThumbnailText } from '@/app/actions';
+import { toPng } from 'html-to-image';
 
 interface TranscriptDoc {
     text: string;
@@ -40,6 +42,7 @@ interface FinalizedClip {
     voiceoverBlocks?: any[];
     captionStyles?: any;
     showCaptions?: boolean;
+    magicPrompt?: string;
 }
 
 interface SocialMetadata {
@@ -61,6 +64,18 @@ export default function TranscriptsClient({ transcripts, initialQuery, initialAg
     const [finalVideoIsPlaying, setFinalVideoIsPlaying] = useState(false);
     const [finalVideoPreciseTime, setFinalVideoPreciseTime] = useState(0);
     const finalVideoRef = useRef<HTMLVideoElement>(null);
+    const captureContainerRef = useRef<HTMLDivElement>(null);
+    const [showSocialPanel, setShowSocialPanel] = useState(false);
+    const [postCaption, setPostCaption] = useState<string>('');
+    const [isGeneratingCaption, setIsGeneratingCaption] = useState<boolean>(false);
+    const [thumbnailDataUrl, setThumbnailDataUrl] = useState<string | null>(null);
+    const [thumbnailPrompt, setThumbnailPrompt] = useState<string>('');
+    const [thumbnailOverlayText, setThumbnailOverlayText] = useState<string>('');
+    const [isGeneratingThumbText, setIsGeneratingThumbText] = useState<boolean>(false);
+    const [textSize, setTextSize] = useState<number>(8);
+    const [textColor, setTextColor] = useState<string>('#ffffff');
+    const [textStroke, setTextStroke] = useState<boolean>(true);
+    const [textPosition, setTextPosition] = useState<'top' | 'center' | 'bottom'>('bottom');
 
     useEffect(() => {
         let rafId: number;
@@ -257,8 +272,8 @@ export default function TranscriptsClient({ transcripts, initialQuery, initialAg
                         </div>
 
                         {/* Expanded Content */}
-                        <div className={`flex-1 flex flex-col min-w-0 min-h-0 transition-all duration-700 ${isMinimized ? 'opacity-0 scale-95 -translate-x-20 blur-sm pointer-events-none' : 'opacity-100 scale-100 translate-x-0'}`}>
-                            <div className="flex items-center justify-between mb-8">
+                        <div className={`flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto custom-scrollbar pr-2 transition-all duration-700 ${isMinimized ? 'opacity-0 scale-95 -translate-x-20 blur-sm pointer-events-none' : 'opacity-100 scale-100 translate-x-0'}`}>
+                            <div className="flex items-center justify-between mb-8 shrink-0">
                                 <div>
                                     <h1 className="text-2xl font-bold tracking-tight text-white mb-2">Final Production</h1>
                                     <p className="text-xs text-neutral-500 uppercase tracking-widest font-bold">Processed & Ready for Export</p>
@@ -284,21 +299,18 @@ export default function TranscriptsClient({ transcripts, initialQuery, initialAg
                                         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                                         </svg>
-                                        Download Master
+                                        Download
                                     </button>
                                     <button
-                                        onClick={() => setIsMinimized(true)}
-                                        className="p-2.5 rounded-lg glass-button text-neutral-400 hover:text-rose-400 transition-all active:scale-95 border border-white/5"
-                                        title="Minimize Workspace"
+                                        onClick={() => setShowSocialPanel(!showSocialPanel)}
+                                        className={`px-6 py-2 rounded-xl transition-all text-[10px] font-black uppercase tracking-widest flex items-center gap-2 border ${showSocialPanel ? 'bg-amber-500 text-black border-amber-500 shadow-[0_0_20px_rgba(245,158,11,0.4)]' : 'bg-transparent hover:bg-white/10 text-amber-500 border-amber-500/50 hover:border-amber-500'}`}
                                     >
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
-                                        </svg>
+                                        Thumbnail
                                     </button>
                                 </div>
                             </div>
 
-                            <div className="flex-1 min-h-0 bg-black rounded-3xl overflow-hidden shadow-2xl border border-white/5 relative group">
+                            <div className="flex-1 min-h-[45vh] shrink-0 bg-black rounded-3xl overflow-hidden shadow-2xl border border-white/5 relative group">
                                 <video
                                     ref={finalVideoRef}
                                     src={finalizedClip.clipUrl}
@@ -315,6 +327,7 @@ export default function TranscriptsClient({ transcripts, initialQuery, initialAg
                                     Full Quality Master
                                 </div>
                             </div>
+
                         </div>
                     </div>
                 ) : (
@@ -330,22 +343,208 @@ export default function TranscriptsClient({ transcripts, initialQuery, initialAg
                 )}
             </div>
 
-            {/* Right Column - Secondary Workspace (Preview OR Social Generation) - Hidden in Finalized Mode */}
-            {!finalizedClip && (
+            {/* Right Column - Secondary Workspace */}
+            {(!finalizedClip || showSocialPanel) && (
             <div
                 className={`flex flex-col h-full min-h-0 transition-all duration-700 cubic-bezier(0.4, 0, 0.2, 1) flex-1 overflow-hidden min-w-[300px]`}
             >
-                <VideoPreview
-                    timestamp={selectedTimestamp}
-                    defaultVideoUrl={effectiveVideoUrl}
-                    onFinalize={handleFinalize}
-                    initialSessionState={editorSessionState}
-                    onSessionUpdate={setEditorSessionState}
-                    onEditorToggle={(active) => {
-                        setIsMinimized(active);
-                        setIsEditorActive(active);
-                    }}
-                />
+                {!finalizedClip ? (
+                    <VideoPreview
+                        timestamp={selectedTimestamp}
+                        defaultVideoUrl={effectiveVideoUrl}
+                        onFinalize={handleFinalize}
+                        initialSessionState={editorSessionState}
+                        onSessionUpdate={setEditorSessionState}
+                        onEditorToggle={(active) => {
+                            setIsMinimized(active);
+                            setIsEditorActive(active);
+                        }}
+                    />
+                ) : (
+                    <div className="flex-1 flex flex-col min-h-0 bg-white/[0.04] rounded-2xl p-8 border border-white/10 overflow-y-auto custom-scrollbar">
+                        <div className="flex items-center justify-between shrink-0 mb-8">
+                            <div>
+                                <h2 className="text-xl font-bold tracking-tight text-white mb-1">Distribution Setup</h2>
+                                <p className="text-[10px] text-neutral-400 uppercase tracking-widest font-bold">Generate Marketing Assets</p>
+                            </div>
+                            <button onClick={() => setShowSocialPanel(false)} className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-neutral-400 hover:text-white transition-all text-[10px] font-black uppercase border border-white/10">Close setup</button>
+                        </div>
+
+                        {/* Thumbnail & Caption Logic */}
+                        <div className="flex flex-col gap-6 shrink-0 pb-12">
+                            {/* Thumbnail Capture Card */}
+                            <div className="p-6 bg-white/[0.03] border border-white/5 rounded-3xl flex flex-col gap-4 relative overflow-hidden group/capture-card">
+                                <div className="absolute inset-x-0 -bottom-20 h-40 bg-amber-500/5 blur-3xl group-hover/capture-card:bg-amber-500/10 transition-colors pointer-events-none" />
+                                <div className="flex items-center justify-between relative z-10">
+                                    <h3 className="text-xs font-black uppercase tracking-widest text-white flex items-center gap-2">
+                                        <svg className="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                                        Digital Asset Thumbnail
+                                    </h3>
+                                    {thumbnailDataUrl && (
+                                        <button onClick={async () => {
+                                            if (!captureContainerRef.current) return;
+                                            try {
+                                                const nativeWidth = finalVideoRef.current?.videoWidth || 1920;
+                                                const dataUrl = await toPng(captureContainerRef.current, { 
+                                                    cacheBust: true, 
+                                                    pixelRatio: nativeWidth / captureContainerRef.current.clientWidth,
+                                                    filter: (node) => {
+                                                        return !node.classList?.contains('exclude-from-capture');
+                                                    }
+                                                });
+                                                const link = document.createElement('a');
+                                                link.href = dataUrl;
+                                                link.download = `thumbnail_${Date.now()}.png`;
+                                                link.click();
+                                            } catch (err) {
+                                                console.error('Failed to export thumbnail', err);
+                                            }
+                                        }} className="text-[9px] font-bold uppercase text-amber-500 hover:text-amber-400 transition-colors">Download</button>
+                                    )}
+                                </div>
+                                <p className="text-[10px] text-neutral-400 font-medium relative z-10">Scrub the video above to an optimal frame, then generate your promotional thumbnail.</p>
+                                
+                                <div className="flex flex-col gap-2 relative z-10 w-full mb-2">
+                                    <div className="flex items-center justify-between text-[10px] text-white/50 mb-1">
+                                        <span>Fine-Tune Selection</span>
+                                        <span>{finalVideoRef.current?.currentTime?.toFixed(1) || '0.0'}s</span>
+                                    </div>
+                                    <input 
+                                        type="range"
+                                        min={0}
+                                        max={finalVideoRef.current?.duration || 100}
+                                        step={0.1}
+                                        value={finalVideoRef.current?.currentTime || 0}
+                                        onChange={(e) => {
+                                            if (finalVideoRef.current) {
+                                                const val = parseFloat(e.target.value);
+                                                finalVideoRef.current.currentTime = val;
+                                                finalVideoRef.current.pause();
+                                            }
+                                        }}
+                                        className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-amber-500 group-hover/capture-card:bg-white/20 transition-colors"
+                                    />
+                                </div>
+
+                                {thumbnailDataUrl ? (
+                                    <div className="flex flex-col gap-4">
+                                        <div ref={captureContainerRef} className="relative w-full aspect-video rounded-2xl overflow-hidden border border-white/10 group/thumb shadow-2xl z-10 flex flex-col items-center justify-center" style={{ containerType: 'inline-size' }}>
+                                            <img src={thumbnailDataUrl} className="w-full h-full object-cover" alt="Selected Thumbnail" />
+                                            {thumbnailOverlayText && (
+                                                <div className={`absolute inset-0 flex flex-col items-center pointer-events-none ${textPosition === 'top' ? 'justify-start pt-[10%]' : (textPosition === 'center' ? 'justify-center' : 'justify-end pb-[10%]')}`}>
+                                                    <span 
+                                                        className="font-black uppercase text-center drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)] leading-tight"
+                                                        style={{ 
+                                                            color: textColor,
+                                                            fontSize: `${textSize}cqw`,
+                                                            WebkitTextStroke: textStroke ? `${textSize * 0.05}cqw black` : 'none'
+                                                        }}
+                                                    >
+                                                        {thumbnailOverlayText}
+                                                    </span>
+                                                </div>
+                                            )}
+                                            <div className="absolute inset-0 bg-black/60 opacity-0 group-hover/thumb:opacity-100 transition-opacity flex items-center justify-center gap-4 backdrop-blur-sm z-20 exclude-from-capture">
+                                                <button onClick={() => { setThumbnailDataUrl(null); setThumbnailOverlayText(''); }} className="px-6 py-2 bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-white hover:bg-white hover:text-black transition-all border border-white/20">Recapture Frame</button>
+                                            </div>
+                                        </div>
+                                        
+                                        <div className="flex flex-col gap-3 relative z-10 bg-black/20 p-4 rounded-xl border border-white/5">
+                                            <div className="flex items-center justify-between text-[10px] text-white/50 uppercase font-black tracking-widest">
+                                                <span>AI Viral Hooks</span>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <input 
+                                                    type="text" 
+                                                    value={thumbnailPrompt} 
+                                                    onChange={e => setThumbnailPrompt(e.target.value)}
+                                                    placeholder="e.g. Crazy AI coding secrets!" 
+                                                    className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-white/30"
+                                                />
+                                                <button 
+                                                    disabled={isGeneratingThumbText}
+                                                    onClick={async () => {
+                                                        if (!thumbnailPrompt) return;
+                                                        setIsGeneratingThumbText(true);
+                                                        const res = await generateThumbnailText(thumbnailPrompt);
+                                                        setThumbnailOverlayText(res);
+                                                        setIsGeneratingThumbText(false);
+                                                    }}
+                                                    className={`px-4 text-[10px] font-black uppercase rounded-lg transition-colors flex items-center gap-2 ${isGeneratingThumbText ? 'bg-neutral-800 text-neutral-500' : 'bg-amber-500 hover:bg-amber-400 text-black'}`}
+                                                >
+                                                    {isGeneratingThumbText ? '...' : 'Spark'}
+                                                </button>
+                                            </div>
+                                            {(thumbnailOverlayText || isGeneratingThumbText) && (
+                                                <div className="flex flex-col gap-3 mt-2">
+                                                    <input 
+                                                        type="text" 
+                                                        value={thumbnailOverlayText} 
+                                                        onChange={e => setThumbnailOverlayText(e.target.value)}
+                                                        placeholder="Overlay Text..." 
+                                                        className="w-full bg-white/5 border border-amber-500/30 text-amber-500 font-black uppercase text-center rounded-lg px-3 py-2 text-sm"
+                                                    />
+                                                    <div className="flex items-center gap-4 bg-black/40 p-3 rounded-xl border border-white/5">
+                                                        <div className="flex flex-col gap-1 items-center">
+                                                            <span className="text-[9px] text-white/50 uppercase font-bold tracking-widest">Pos</span>
+                                                            <div className="flex gap-1 bg-white/5 p-0.5 rounded-lg">
+                                                              <button onClick={() => setTextPosition('top')} className={`w-5 h-5 flex items-center justify-center rounded text-[8px] font-black transition-colors ${textPosition==='top' ? 'bg-amber-500 text-black' : 'text-neutral-400 hover:text-white'}`}>T</button>
+                                                              <button onClick={() => setTextPosition('center')} className={`w-5 h-5 flex items-center justify-center rounded text-[8px] font-black transition-colors ${textPosition==='center' ? 'bg-amber-500 text-black' : 'text-neutral-400 hover:text-white'}`}>C</button>
+                                                              <button onClick={() => setTextPosition('bottom')} className={`w-5 h-5 flex items-center justify-center rounded text-[8px] font-black transition-colors ${textPosition==='bottom' ? 'bg-amber-500 text-black' : 'text-neutral-400 hover:text-white'}`}>B</button>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex-1 flex flex-col gap-1">
+                                                            <span className="text-[9px] text-white/50 uppercase font-bold tracking-widest flex justify-between"><span>Text Size</span><span>{textSize}%</span></span>
+                                                            <input 
+                                                                type="range" min={4} max={20} step={0.5} 
+                                                                value={textSize} 
+                                                                onChange={e => setTextSize(parseFloat(e.target.value))}
+                                                                className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                                                            />
+                                                        </div>
+                                                        <div className="flex flex-col gap-1 items-center">
+                                                            <span className="text-[9px] text-white/50 uppercase font-bold tracking-widest">Color</span>
+                                                            <input 
+                                                                type="color" 
+                                                                value={textColor} 
+                                                                onChange={e => setTextColor(e.target.value)}
+                                                                className="w-5 h-5 rounded cursor-pointer border-0 p-0 bg-transparent"
+                                                            />
+                                                        </div>
+                                                        <div className="flex flex-col gap-1 items-center">
+                                                            <span className="text-[9px] text-white/50 uppercase font-bold tracking-widest">Outline</span>
+                                                            <button onClick={() => setTextStroke(!textStroke)} className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${textStroke ? 'bg-amber-500 border-amber-500 text-black' : 'bg-transparent border-white/30 text-transparent'}`}>
+                                                                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" /></svg>
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <button 
+                                        onClick={() => {
+                                            if (!finalVideoRef.current) return;
+                                            const canvas = document.createElement('canvas');
+                                            canvas.width = finalVideoRef.current.videoWidth || 1920;
+                                            canvas.height = finalVideoRef.current.videoHeight || 1080;
+                                            canvas.getContext('2d')?.drawImage(finalVideoRef.current, 0, 0, canvas.width, canvas.height);
+                                            setThumbnailDataUrl(canvas.toDataURL('image/png'));
+                                        }}
+                                        className="relative z-10 w-full aspect-video rounded-2xl border-2 border-dashed border-white/10 flex flex-col items-center justify-center gap-4 hover:border-amber-500/50 hover:bg-amber-500/[0.02] transition-all group/capture"
+                                    >
+                                        <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center group-hover/capture:scale-110 group-hover/capture:bg-amber-500/20 transition-all border border-white/5">
+                                            <svg className="w-5 h-5 text-neutral-400 group-hover/capture:text-amber-500 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                                        </div>
+                                        <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 group-hover/capture:text-amber-500 transition-colors">Capture Current Video Frame</span>
+                                    </button>
+                                )}
+                            </div>
+
+                        </div>
+                    </div>
+                )}
             </div>
             )}
 

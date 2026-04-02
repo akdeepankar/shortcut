@@ -165,3 +165,47 @@ function formatRow(row: any): string {
     }
     return `[${row.start_time || ''} to ${row.end_time || ''}] "${row.text}"`;
 }
+
+export async function generatePostCaption(prompt: string) {
+    try {
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        const completion = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [
+                {
+                    role: 'system',
+                    content: 'You are an expert social media manager. Based on the user\'s prompt for a video, write an engaging, catchy, and highly shareable social media caption including relevant emojis and hashtags. Ensure it is concise, punchy, and ready to be copied directly.'
+                },
+                { role: 'user', content: prompt }
+            ],
+            max_tokens: 150,
+        });
+
+        return completion.choices[0]?.message?.content || 'Check out this awesome video!';
+    } catch (e: any) {
+        console.error("Failed to generate caption:", e.message);
+        return 'Check out this awesome video!';
+    }
+}
+
+export async function generateThumbnailText(prompt: string) {
+    try {
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        const completion = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [
+                {
+                    role: 'system',
+                    content: 'You are a master YouTuber and digital marketer. Generate a catchy, clickbaity, uppercase text overlay (maximum 5 words) for a video thumbnail based on the user\'s prompt. Return ONLY the text, nothing else. No quotes.'
+                },
+                { role: 'user', content: prompt }
+            ],
+            max_tokens: 20,
+        });
+
+        return completion.choices[0]?.message?.content?.trim().replace(/^["']|["']$/g, '') || 'MUST WATCH NOW';
+    } catch (e: any) {
+        console.error("Failed to generate thumbnail text:", e.message);
+        return 'MUST WATCH NOW';
+    }
+}

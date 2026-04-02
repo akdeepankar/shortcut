@@ -414,25 +414,35 @@ export default function TranscriptView({ transcripts, initialQuery, initialAgent
                 }`}>
                 
                 {/* Header Actions */}
-                <div className="flex-shrink-0 flex items-center justify-between mb-8">
-                    {/* Tab Switcher */}
-                    <div className="flex p-1 bg-white/[0.05] rounded-xl border border-white/10 backdrop-blur-md">
-                        {tabItems.map((tab) => (
-                            <button
-                                key={tab.id}
-                                onClick={() => setActiveTab(tab.id)}
-                                className={`px-5 py-2.5 rounded-xl text-[10px] font-bold tracking-widest uppercase transition-all duration-300 flex items-center gap-2.5 whitespace-nowrap ${activeTab === tab.id ? 'bg-white text-black shadow-lg shadow-white/10' : 'text-neutral-500 hover:text-white'}`}
-                            >
-                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={tab.icon} />
-                                </svg>
-                                {tab.label}
-                            </button>
-                        ))}
+                <div className="flex-shrink-0 grid grid-cols-3 items-center mb-8">
+                    {/* Left: App Title */}
+                    <div className="flex items-center">
+                        <div className="flex items-center gap-2 relative group">
+                            <img src="https://cdn-icons-png.freepik.com/256/4415/4415274.png?semt=ais_white_label" className="w-5 h-5 relative z-10 filter invert opacity-80" alt="Shortcut Logo" />
+                            <span className="text-xl font-bold tracking-tighter text-slate-300">Shortcut.</span>
+                        </div>
                     </div>
 
-                    {/* Meta Controls */}
-                    <div className="flex items-center gap-2">
+                    {/* Middle: Tab Switcher */}
+                    <div className="flex justify-center">
+                        <div className="flex p-1 bg-white/[0.05] rounded-xl border border-white/10 backdrop-blur-md">
+                            {tabItems.map((tab) => (
+                                <button
+                                    key={tab.id}
+                                    onClick={() => setActiveTab(tab.id)}
+                                    className={`px-5 py-2.5 rounded-xl text-[10px] font-bold tracking-widest uppercase transition-all duration-300 flex items-center gap-2.5 whitespace-nowrap ${activeTab === tab.id ? 'bg-white text-black shadow-lg shadow-white/10' : 'text-neutral-500 hover:text-white'}`}
+                                >
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={tab.icon} />
+                                    </svg>
+                                    {tab.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Right: Meta Controls */}
+                    <div className="flex items-center justify-end gap-2">
                         <div className="flex items-center gap-2 bg-white/[0.03] p-1 rounded-xl border border-white/5">
                             <button
                                 onClick={handleHardRefresh}
